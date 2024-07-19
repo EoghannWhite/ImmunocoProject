@@ -1,0 +1,95 @@
+---
+title: "VDJtools"
+author: "Eoghann White"
+date: "2024-07-10"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+  pdf_document:
+    toc: yes
+editor_options:
+  chunk_output_type: inline
+---
+
+# **AIM OF THIS SCRIPT**
+This script is designed to operate within a bash environment, leveraging R Markdown for clarity and ease of presentation. Its primary objective is to convert MiXCR format files into VDJTOOLS format. Key functionalities provided by VDJTOOLS include the decontaminate function, which effectively filters cross-sample contamination, and the FilterByFrequency function, allowing the precise filtering of clonotypes based on user-defined thresholds. For instance, a threshold of 0.6 is applied here to exclude minor CDR3aa chains caused by low-quality reads, which could otherwise skew the analysis by incorrectly assigning additional clonotypes to cells. Upon completion of the conversion and processing steps, the script will produce output suitable for import into R. Subsequent analysis and visualization of the TCR repertoire will be conducted using the immunarch package, as detailed in the `ClonotypicAnalysis_Immunarch.Rmd` script.
+
+NOTE: This script will use the output produced by the `ClonotypicProcessing_MiXCR.Rmd` script. Before running the script, create four directories to store intermediate and final vdjtools processing files: one for VDJTOOLS-converted files, one for decontaminated files, one for filtered files, and one for the merged final output (see 2. SET UP NECESSARY DIRECTORIES). 
+
+# **1. DEFINE PATH TO VDJTOOLS EXECUTABLE**
+```{bash}
+vdjtools="java -jar /Users/eoghann/Documents/Analyse_scRNAseq/VDJtools/vdjtools-1.2.1/vdjtools-1.2.1.jar"
+vdjtools=/Path/to/vdjtools
+```
+
+# **2. SET UP NECESSARY DIRECTORIES**
+```{bash}
+# Path to the MiXCR ouput (either for TRB or TRA chain).
+mixcr_output_path=/Path/to/MiXCR/Ouput/Directory
+# Path to the various directories that will store outputs. 
+vdj_format_targetDIR=/Path/to/vdjtools/Format/Directory
+Decontaminate_DIR=/Path/to/vdjtools/Decontaminate/Directory
+Filter_DIR=/Path/to/vdjtools/Filter/Directory
+FinalOutput_Dir=/Path/to/Final/Output/Directory
+```
+
+# **3. CONVERT FILES TO VDJTOOLS FORMAT**
+```{bash}
+# List all patients' directories in the MiXCR output path.
+patients=$(ls ${mixcr_output_path})
+# Iterate over each patient directory.
+for p in $patients
+do
+  # Create a directory for the patient in the VDJtools format target directory.
+  mkdir -p ${vdj_format_targetDIR}/${p}
+  # List all samples (files) in the current patient directory.
+  samples=$(ls ${mixcr_output_path}/${p})
+  # Convert files to VDJtools format & move to target directory.
+  for s in $samples
+  do
+    cd ${mixcr_output_path}/${p}
+    ${vdjtools} Convert -S mixcr ${s} VDJ
+    mv VDJ.${s} ${vdj_format_targetDIR}/${p}
+  done
+done
+```
+
+# **4. RUN DECONTAMINATE AND FILTER FUNCTIONS FROM VDJTOOLS**
+```{bash}
+# List all patients' directories in the MiXCR output path (again, for clarity).
+patients=$(ls ${mixcr_output_path})
+# Iterate over each patient directory.
+for p in $patients
+do
+  # Create directories for decontamination and filtering results.
+  mkdir -p ${Decontaminate_DIR}/${p}
+  mkdir -p ${Filter_DIR}/${p}
+  # Apply vdjtools' decontaminate function and move output to patient's decontamination directory.
+  cd ${vdj_format_targetDIR}/${p}
+  samples=$(ls ${vdj_format_targetDIR}/${p}/*.txt)
+  ${vdjtools} Decontaminate $samples Decontaminate
+  mv Decontaminate* "${Decontaminate_DIR}/${p}/"
+  # Clean up unwanted files from decontamination.
+  rm -f "${Decontaminate_DIR}/${p}/Decontaminate.dec.summary.txt"
+  rm -f "${Decontaminate_DIR}/${p}/_vdjtools_error.log"
+  # Filter each file by frequency and move output to patient's filter directory.
+  cd "${Decontaminate_DIR}/${p}"
+  files=$(ls)
+  for f in $files
+  do
+    ${vdjtools} FilterByFrequency -f 0.6 "${Decontaminate_DIR}/${p}/${f}" Filtered
+    mv Filtered.$f ${Filter_DIR}/$p
+  done
+  # Clean up unwanted files from filtering.
+  rm -f "${Decontaminate_DIR}/${p}/Filtered.freqfilter.summary.txt"
+  rm -f "${Decontaminate_DIR}/${p}/metadata.txt"
+  rm -f "${vdj_format_targetDIR}/${p}/metadata.txt"
+  # Merge filtered files and relocate the output to the FinalOutput directory.
+  cd ${Filter_DIR}/${p}
+  array=( Filtered.* )
+  head -1 ${array[0]} > ${p}.txt
+  tail -n +2 -q ${array[@]} >> ${p}.txt
+  mv ${p}.txt ${FinalOutput_Dir}
+done
+```

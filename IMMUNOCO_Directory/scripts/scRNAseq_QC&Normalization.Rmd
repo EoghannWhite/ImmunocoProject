@@ -1,0 +1,199 @@
+---
+title: "Quality Control and Normalization"
+author: "Eoghann White"
+date: "2023-04-21"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# **AIM OF THE SCRIPT**
+The aim of this script is to perform quality control (QC) and normalization of scRNAseq data from HIV-2 specific CD8 T cells and HIV-1 specific CD8 T cells from the IMMUNOCO cohort. 
+
+# **1. LOAD PACKAGES**
+```{r, Loading packages, message=F, warning=F, results=F}
+library(tidyverse)
+library(SingleCellExperiment)
+library(AnnotationHub)
+library(ensembldb)
+library(scater)
+library(scran)
+library(biomaRt)
+```
+
+# **2. IMPORT RAW DATA & ADD METADATA**
+```{r}
+# Load count matrix and remove genes with 0 counts in all cells. 
+raw_counts <- readRDS(file = "../1-RawData/Raw_counts.RDS")
+always_zero <- which(rowSums(raw_counts)==0)
+raw_counts <- raw_counts[-always_zero,]
+# Create the SingleCellExperiment object (`sce`) and add the metadata.
+sce <- SingleCellExperiment(assay = list(counts = as.matrix(raw_counts)))
+metadata <- readRDS("../1-RawData/Metadata.RDS")
+colData(sce) <- DataFrame(metadata)
+```
+
+# **3. QUALITY CONTROL**
+
+Cells of inadequate quality are excluded based on the following criteria : library size, number of detected genes and percentage of mitochondrial genes. Outlier cells are identified for each metric based on the median absolute deviation (MAD) from the median value of each metric across all cells, with the cutoff for exclusion set at >3 MADs. Fixed thresholds are also used to exclude cells expressing <500 or >5,000 genes.
+
+Add QC metrics to the `sce` object:
+```{r}
+ens.hum <- AnnotationHub() [["AH75011"]]
+location <- mapIds(ens.hum, keys = rownames(sce), keytype = "GENEID", column="SEQNAME")
+is.mito <- which(location == "MT")
+sce <- addPerCellQC(sce, subsets=list(Mito=is.mito))
+df <- perCellQCMetrics(sce, subsets=list(Mito=is.mito))
+```
+Identify outliers cells with adaptive or hard threshold, while considering for batch effects:
+```{r}
+qc.lib <- isOutlier(df$sum, type = "lower", log = TRUE, batch = sce$Patient.TP)
+qc.nexpress <- isOutlier(df$detected, type = "lower", log = TRUE, batch = sce$Patient.TP)
+qc.nexpress.up <- df$detected > 5000
+qc.nexpress.down <- df$detected < 500
+qc.mito <- isOutlier(df$subsets_Mito_percent, type = "higher")
+discard <- qc.lib | qc.mito | qc.nexpress | qc.nexpress.up | qc.nexpress.down
+colData(sce) <- cbind(colData(sce),df)
+sce$discard <- discard 
+```
+Visualize discarded cells:
+```{r}
+gridExtra::grid.arrange(
+  plotColData(sce, x = "Patient.TP", y = "sum", colour_by = "discard")
+  + scale_y_log10() + ggtitle("Total counts"),
+  plotColData(sce, x = "Patient.TP", y = "detected", colour_by = "discard")
+  + scale_y_log10() + ggtitle("Detected genes"),
+  plotColData(sce, x = "Patient.TP", y = "subsets_Mito_percent", colour_by = "discard")
+  + ggtitle("Mito percent")
+)
+```
+Discard low-quality cells from the sce object:
+```{r}
+sce <- sce[,!sce$discard]
+```
+Remove the entire group when too many cells display a high percentage of mitochondrial genes: 
+```{r}
+`%notin%` <- Negate(`%in%`)
+sce <- sce[,sce$Patient.TP %notin% c("PS212INT",  "PS24EI8INT", "PS24FL8INT")]
+```
+
+# **4. NORMALIZATION**
+Discard genes express in less than 5 cells to reduce computation time:
+```{r}
+num.cells <- nexprs(sce, byrow=TRUE)
+to.keep <- num.cells > 5
+sce <- sce[to.keep,]
+```
+Find clusters using `scran` and apply normalization:
+```{r}
+cluster <- quickCluster(sce, min.size = 5,  use.ranks = FALSE)
+sce <- computeSumFactors(sce, clusters = cluster)
+sce <- logNormCounts(sce)
+sce$cluster <- cluster
+```
+Visualize normalization by UMAP:
+```{r}
+# run PCA & UMAP
+sce <- runPCA(sce)
+set.seed(50)
+sce <- runUMAP(sce)
+
+# Plot UMAP next to QC metrics
+a <- plotReducedDim(sce, dimred= "UMAP", colour_by = "cluster", point_size = 3) +
+        theme(legend.key.size = unit(1, 'cm'),
+              legend.key.height = unit(1, 'cm'),
+              legend.key.width = unit(1, 'cm'),
+              legend.title = element_text(size=14),
+              legend.text = element_text(size=10), 
+              panel.grid = element_blank(), 
+              axis.line = element_line(linewidth = 0.5),
+              panel.border = element_blank())
+b <- gridExtra::grid.arrange(
+    plotColData(sce, x = "cluster", y = "sum", colour_by = "cluster") + 
+      scale_y_log10() +  ggtitle("Total counts") + theme(legend.position = "none", panel.grid = element_blank()),
+    plotColData(sce, x = "cluster", y = "detected", colour_by = "cluster") + 
+      scale_y_log10() + ggtitle("Detected genes") + theme(legend.position = "none", panel.grid = element_blank()),
+    plotColData(sce, x = "cluster", y = "subsets_Mito_percent", colour_by = "cluster") + 
+      ggtitle("Mito percent") +  theme(legend.position = "none", panel.grid = element_blank()))
+  
+gridExtra::grid.arrange(a, b, ncol = 2)
+```
+Among the clusters identified by the `quickCluster` function, two seems to be driven mostly by dead cells. Clusters 1 and 3 (*numbers may vary depending on the run*) contain a higher proportion of cells with a reduced number of detected genes compared to the other clusters. These clusters also exhibit an increased percentage of mitochondrial genes, and their library size displays a distinct profile. Most of the cells in these clusters belong to the PS212 patient. Moreover, FlowJo analysis of tetramer+ sorted cells (data not shown) indicated that the EARLY and INT conditions for PS14 are likely non-specific CD8 T cells rather than HIV-specific CD8 T cells. Remove corresponding cells and problematic conditions :
+```{r}
+# Remove problematic conditions
+sce <- sce[, sce$Patient.TP %notin% c("PS212EARLY", "PS212LATE", "PS14EARLY", "PS14INT")]
+# Remove remaining dead cells
+umap_table <- as.data.frame(reducedDim(sce, "UMAP"))
+good_cells <- rownames(umap_table[umap_table$UMAP1 > -1.5,])
+sce <- sce[, good_cells]
+# Plot UMAP after removing dead cells
+plotReducedDim(sce, dimred= "UMAP", colour_by = "cluster", point_size = 3) +
+  xlim(min(umap_table$UMAP1), max(umap_table$UMAP1)) +
+  theme(legend.key.size = unit(1, 'cm'),
+        legend.key.height = unit(1, 'cm'),
+        legend.key.width = unit(1, 'cm'),
+        legend.title = element_text(size=14),
+        legend.text = element_text(size=10), 
+        panel.grid = element_blank(), 
+        axis.line = element_line(linewidth = 0.5),
+        panel.border = element_blank())
+```
+Normalization is performed again, without the dead cells:
+```{r}
+cluster <- quickCluster(sce, min.size = 0,  use.ranks = FALSE)
+sce <- computeSumFactors(sce, clusters = cluster)
+sce <- logNormCounts(sce)
+sce$cluster <- cluster
+```
+Visualize new normalization by PCA & UMAP:
+```{r}
+sce <- runPCA(sce)
+set.seed(50)
+sce <- runUMAP(sce)
+# Plot UMAP
+plotReducedDim(sce, dimred= "UMAP", colour_by = "TP", ncomponents = c(1:2), point_size = 3) +
+        theme(legend.key.size = unit(1, 'cm'),
+              legend.key.height = unit(1, 'cm'),
+              legend.key.width = unit(1, 'cm'),
+              legend.title = element_text(size=14),
+              legend.text = element_text(size=10),
+              panel.grid = element_blank(),
+              axis.line = element_line(linewidth = 0.5),
+              panel.border = element_blank())
+```
+
+# **5. REMOVING PSEUDOGENE**
+```{r}
+gene_biotype <- mapIds(ens.hum, keys = rownames(sce), keytype="GENEID", column="TXBIOTYPE")
+is.coding <- which(gene_biotype == "protein_coding")
+sce <- sce[is.coding]
+```
+
+# **6. CHANGE GENE ANNOTATION** (optional)
+Change from ensembl annotation to HGNC
+```{r}
+mart <- useMart(dataset = "hsapiens_gene_ensembl", biomart = "ensembl")
+annot <- getBM(attributes = c("hgnc_symbol", "ensembl_gene_id"), filters = "ensembl_gene_id", values = rownames(sce), mart = mart)
+annot2 <- left_join(x  = data.frame("ensembl_gene_id" = rownames(sce), stringsAsFactors = F), y = annot, by = "ensembl_gene_id")
+annot3 <- distinct(annot2, ensembl_gene_id, .keep_all = T)
+# Replace NA in HGNC with ensembl name
+notfound <- rownames(sce)[rownames(sce) %notin% annot$ensembl_gene_id]
+annot3[annot3$ensembl_gene_id %in% notfound,]$hgnc_symbol <- annot3[annot3$ensembl_gene_id %in% notfound,]$ensembl_gene_id
+# Replace empty character in HGNC with ensembl name
+annot3[str_length(annot3$hgnc_symbol) == 0,]$hgnc_symbol <- annot3[str_length(annot3$hgnc_symbol) == 0,]$ensembl_gene_id
+# Change rownames of sce
+hgnc_sce <- sce
+rownames(hgnc_sce) <- annot3$hgnc_symbol
+rownames(hgnc_sce@assays@data$counts) <- annot3$hgnc_symbol
+rownames(hgnc_sce@assays@data$logcounts) <- annot3$hgnc_symbol
+```
+
+# **7. EXPORT FINAL OBJECT**
+```{r}
+saveRDS(sce, "SingleCellExperimentObject.RDS")
+saveRDS(hgnc_sce, "SingleCellExperimentObject_HGNC.RDS")
+```

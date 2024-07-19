@@ -1,0 +1,760 @@
+---
+title: "Analysis"
+author: "Eoghann White"
+date: "2023-06-19"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# **AIM OF THE SCRIPT**
+The aim of this script is to analyze the gene expression and clonotypic composition of HIV-1 specific CD8 T cells from donor PS24 of the IMMUNOCO cohort.
+
+# **1. LOAD LIBRARIES**
+```{r}
+# Handling and analysis of scRNAseq datasets.
+library(SingleCellExperiment)
+library(Seurat)
+library(scran)
+library(scater)
+# Data manipulation/visualization.
+library(tidyverse)
+library(ggrepel)
+library(gridExtra)
+# Violin Plot.
+# devtools::install_github("psyteachr/introdataviz")
+library(introdataviz)
+# GSEA.
+library(fgsea)
+library(qusage)
+# splsDA analysis.
+library(mixOmics)
+```
+
+# **2. LOAD USEFUL FUNCTIONS**
+
+```{r}
+source("MyFunctions.R")
+```
+
+# **3. IMPORT DATA**
+
+Importing normalized data and remove genes expressed in less than 10 cells in order to minimize computation time:
+
+```{r}
+# Import normalized data.
+sce <- readRDS("../data/GeneExpression/processed/SingleCellExperimentObject_HGNC.RDS")
+sce <- sce[,sce$Patient %in% c("PS24EI8", "PS24FL8")]
+# Keep genes express in at least 10 cells.
+num.cells <- nexprs(sce, byrow=TRUE)
+sce <- sce[num.cells > 10,]
+```
+
+# **4. DIMENSIONALITY REDUCTION AND DATA VISUALIZATION**
+
+## Principal componant analysis
+
+Run PCA:
+
+```{r}
+set.seed(100)
+sce <- runPCA(sce)
+```
+
+Plotting PCA:
+
+```{r}
+# Chose componant to plot.
+compx <- 1
+compy <- 2
+
+#plot PCA
+plotReducedDim(sce, dimred= "PCA", colour_by = "TP", ncomponents = c(compx, compy), point_size = 2) + 
+  scale_color_manual(name = "", values = c("red", "blue"), labels = c("Early", "Late"))
+```
+
+In order to focus on the biological signal, minimize computational effort, and eliminate noise, only the principal components (PCs) with the highest variance explained are retained for subsequent analysis. PCs are selected based on the elbow point in the screeplot. Here, we select the first 8 PCs:
+
+```{r}
+percent.var <- attr(reducedDim(sce), "percentVar")
+plot(percent.var, xlab="PC", ylab="Variance explained (%)")
+abline(v = 8, col = "red", lwd = 3, lty = 3)
+reducedDim(sce, "PCA_filt") <- reducedDim(sce)[,1:8]
+```
+
+## Visualization
+
+Running UMAP algorithm:
+
+```{r}
+set.seed(00101001101)
+sce <- runUMAP(sce, dimred="PCA", name = "UMAP", n_neighbors = 50)
+set.seed(00101001101)
+sce <- runUMAP(sce, dimred="PCA_filt", name = "UMAP_filt", n_neighbors = 50)
+```
+
+Cells clustered according to the time-point but not to the specificity (EI8 or FL8-specific cells). Therefore, cells were merged for downstream analysis (*Fig 3B*):
+
+```{r}
+gridExtra::grid.arrange(
+plotReducedDim(sce, dimred="UMAP_filt", colour_by="TP", point_size = 3) + 
+  scale_color_manual(name = "", values = c("red", "blue"), labels = c("Early", "Late")) +
+  xlab("UMAP 1") + ylab("UMAP 2") +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 12),
+        legend.position = "top"),
+
+plotReducedDim(sce, dimred="UMAP_filt", colour_by="Patient.TP", point_size = 3) + 
+  scale_color_manual(name = "", values = c("#CC0000", "skyblue1", "sienna1", "darkslateblue"), 
+                     labels = c("EARLY / EI8", "LATE / EI8", "EARLY / FL8", "LATE / FL8")) +
+    xlab("UMAP 1") + ylab("UMAP 2") +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 12),
+        legend.position = "top"),
+ncol =2)
+```
+
+# **5. MARKER GENE DETECTION**
+
+We use a Wilcoxon rank sum tests to identify differentially expressed genes between EARLY and LATE. The `wilcoxon.sce` function is a wrapper around the `findMarkers` function from the `scran` package (https://rdrr.io/bioc/scran/man/findMarkers.html). p-values are adjusted for multiple comparisons using the False Discovery Rate (FDR). The output is a dataframe containing 5 columns (Genes, uncorrected p-values, FDR adjusted p-values, log2 fold change and the symbol associated with the significativity):
+
+```{r}
+df <- wilcoxon.sce(sce.object = sce, group.by = "TP", compareTo = 2)
+```
+
+## Volcano plot of Differentially Expressed Genes (DEG)
+
+To highlight statistically significant genes with large fold change (potentially the most biologically meaningful genes), a volcano plot was generated using the `plot.volcano` function (homemade). The code below generates :
+  - Simple volcano plot (*Fig 3C*)
+  - Volcano highlighting key genes associated with Exhaustion and inhibition of CD8 T cells
+  - Volcano highlighting key genes associated with IFN signaling
+  - Volcano highlighting key genes associated with Stemness of CD8 T cells
+
+```{r}
+# Simple volcano plot
+plot.volcano(df.stat = df, pval.col = "FDR", lfc.col = "logFC.EARLY", lfc.colors = c("red", "grey", "blue"), 
+             show.vlines = T, show.hline = T,  show.gene.nbr = T) +
+  xlab(bquote('log'^2~fold~change)) +
+  ylab(bquote('-log'^10~ adjusted~p~values))
+
+# Highlighting genes associated with Exhaustion/inhibition
+gene.labels <- c("TOX", "ADGRG1", "PRDM1", "B3GNT2", "SLA2", "PELI1")
+plot.volcano(df.stat = df, pval.col = "FDR", lfc.col = "logFC.EARLY", gene.col = "Genes", lfc.colors = c("red", "grey", "blue"), 
+             show.vlines = T, show.hline = T,  show.gene.nbr = T, label.genes = gene.labels, label.size = 5) +
+  xlab(bquote('log'^2~fold~change)) +
+  ylab(bquote('-log'^10~ adjusted~p~values))
+
+# Highlighting genes associated with IFN signaling
+gene.labels <- c("LY6E", "CEMIP2", "IFI44L", "IFI6", "RIOK3", "IFITM1")
+plot.volcano(df.stat = df, pval.col = "FDR", lfc.col = "logFC.EARLY", gene.col = "Genes", lfc.colors = c("red", "grey", "blue"), 
+             show.vlines = T, show.hline = T,  show.gene.nbr = T, label.genes = gene.labels, label.size = 5) +
+  xlab(bquote('log'^2~fold~change)) +
+  ylab(bquote('-log'^10~ adjusted~p~values))
+
+# Highlighting genes associated with stemness 
+gene.labels <- c("IL7R", "CCR7", "BCL6", "CXCR4", "SELL", "GZMK")
+plot.volcano(df.stat = df, pval.col = "FDR", lfc.col = "logFC.EARLY", gene.col = "Genes", lfc.colors = c("red", "grey", "blue"), 
+             show.vlines = T, show.hline = T,  show.gene.nbr = T, label.genes = gene.labels, label.size = 5) +
+  xlab(bquote('log'^2~fold~change)) +
+  ylab(bquote('-log'^10~ adjusted~p~values))
+
+# Highlighting all 3 groups
+gene.labels <- c("TOX", "ADGRG1", "PRDM1", "B3GNT2", "SLA2", "PELI1",
+                 "LY6E", "CEMIP2", "IFI44L", "IFI6", "RIOK3", "IFITM1",
+                 "IL7R", "CCR7", "BCL6", "CXCR4", "SELL", "GZMK")
+plot.volcano(df.stat = df, pval.col = "FDR", lfc.col = "logFC.EARLY", gene.col = "Genes", lfc.colors = c("red", "grey", "blue"), 
+             show.vlines = T, show.hline = T,  show.gene.nbr = T, label.genes = gene.labels, label.size = 4) +
+  xlab(bquote('log'^2~fold~change)) +
+  ylab(bquote('-log'^10~ adjusted~p~values))
+```
+
+## Heatmap of DEG
+
+By generating a volcano plot, it was observed that 142 genes were enriched at the EARLY stage and 87 genes were enriched at the LATE stage (considering a moderately stringent threshold of 1 for the log2 fold-change). These genes are shown in the following heatmap (*Fig 3D*):
+
+```{r}
+# Chose thresholds for gene selection.
+lfc.thresh <- 1
+FDR.thresh <- 0.05
+
+# Select genes based on thresholds and create a new sce object with these genes. 
+heatmap.genes <- df[df$FDR < FDR.thresh & abs(df$logFC.EARLY) > lfc.thresh, "Genes"]
+heatmap.sce <- sce[heatmap.genes]
+
+# Set colors for the heatmap. 
+colors <- list(TP = c("EARLY" = "red", "LATE" = "blue"))
+
+# Plot heatmap.
+plotHeatmap(
+  heatmap.sce,
+  rownames(heatmap.sce),
+  exprs_values = "logcounts",
+  center = T,
+  colour_columns_by = "TP",
+  column_annotation_colors = colors[1],
+  order_columns_by = "TP",
+  show_colnames = F, 
+  show_rownames = F,
+  treeheight_row = 0, 
+  treeheight_col = 0,
+  annotation_legend = F
+)
+```
+
+## Violin plot of key DEG
+
+The set of highly enriched genes at the EARLY time point included genes commonly linked to exhaustion and inhibition of CD8 T cells, along with an IFN signaling signature. On the other hand, cells at LATE showed increased expression of genes associated with stemness of CD8 T cells. The corresponding genes are plotted as violin plot with the `plot.violin` function (homemade around ggplot2): 
+
+```{r}
+# Genes associated with Exhaustion/inhibition of CD8 T cells.
+gene.vector <- c("TOX", "PRDM1", "SLA2", "ADGRG1", "B3GNT2", "PELI1")
+plot.violin(sce.object = sce, gene.vector = gene.vector, df.wilcox = df, group.by = "TP", colors = c("red", "blue"))
+
+# Genes associated with IFN signaling.
+gene.vector <- c("LY6E", "CEMIP2", "IFI44L", "IFI6", "RIOK3", "IFITM1")
+plot.violin(sce.object = sce, gene.vector = gene.vector, df.wilcox = df, group.by = "TP", colors = c("red", "blue"))
+
+# Genes associated with Stemness of CD8 T cells.
+gene.vector <- c("IL7R", "GZMK", "CCR7", "CXCR4", "SELL", "BCL6")
+plot.violin(sce.object = sce, gene.vector = gene.vector, df.wilcox = df, group.by = "TP", colors = c("red", "blue"))
+```
+
+Alternatively, violin plot can be plotted with the `VlnPlot` function from `Seurat` (Violin plots in *Fig 3E*):
+
+```{r, Directory, Selected genes and Seurat object}
+# Create seurat object.
+data_seurat <- as.Seurat(sce, counts = "counts", data = "logcounts")
+# Plot and export Exhaustion/inhibition associated genes.
+gene.vector <- c("TOX", "PRDM1", "SLA2", "ADGRG1", "B3GNT2", "PELI1")
+myplots <- lapply(gene.vector, plot_seq_data)
+pdf(file ="../results/figures/Figure3E_ViolinPlotExhaustion_PS24.pdf", height = 2, width = 2*length(myplots))
+grid.arrange(grobs = myplots, ncol = length(myplots))
+dev.off()
+# Plot and export IFN signaling associated genes.
+gene.vector <- c("LY6E", "CEMIP2", "IFI44L", "IFI6", "RIOK3", "IFITM1")
+myplots <- lapply(gene.vector, plot_seq_data)
+pdf(file ="../results/figures/Figure3E_ViolinPlotIFN_PS24.pdf", height = 2, width = 2*length(myplots))
+grid.arrange(grobs = myplots, ncol = length(myplots))
+dev.off()
+# Plot and export stemness associated genes.
+gene.vector <- c("IL7R", "GZMK", "CCR7", "CXCR4", "SELL", "BCL6")
+myplots <- lapply(gene.vector, plot_seq_data)
+pdf(file ="../results/figures/Figure3E_ViolinPlotStemness_PS24.pdf", height = 2, width = 2*length(myplots))
+grid.arrange(grobs = myplots, ncol = length(myplots))
+dev.off()
+```
+
+# **6. GENE SET ENRICHEMENT ANALYSIS**
+
+GSEA was performed using the software from the Broad Institute (https://www.gsea-msigdb.org/gsea/index.jsp) with the *Reactome* database. Statistically significant and interesting pathways related to CD8 T cell biology were imported into R and re-plotted using the `fgsea` package for better visualization. These pathways can be found in the `My_SelectedReactomePathways_GSEA.gmt` object. Moreover, additional pathways from the literature that are relevant in the context of HIV-1 infection were manually curated and can be found in the `Manuallycurated_GSEA.gmt` object (*Fig 3 F&G*). 
+
+Running GSEA with the `fgsea` package :
+```{r}
+# Re-run wilcoxon function with `compareTo` set at 1. logFC values for LATE will then be negative and on the right part of the gsea plot.
+dfgsea <- wilcoxon.sce(sce.object = sce, group.by = "TP", compareTo = 1)
+
+# Extracting log fold change for the df object previously created. 
+dfgsea <- dfgsea[order(dfgsea$logFC.LATE, decreasing = T),]
+ranks <- dfgsea$logFC.LATE
+names(ranks) <- dfgsea$Genes
+
+# Running GSEA with the manually curated pathways.
+gmt.perso <- qusage::read.gmt("../data/AdditionnalFiles/Manuallycurated_GSEA.gmt")
+set.seed(100)
+perso.gsea <- fgsea(pathways = gmt.perso, 
+                  stats    = ranks,
+                  minSize  = 15,
+                  maxSize  = 500)
+
+# Running GSEA with selected reactome pathways. 
+gmt.reac <- qusage::read.gmt("../data/AdditionnalFiles/My_SelectedReactomePathways_GSEA.gmt")
+set.seed(100)
+reac.gsea <- fgsea(pathways = gmt.reac, 
+                  stats    = ranks,
+                  minSize  = 15,
+                  maxSize  = 500)
+```
+
+Plotting results from *Fig 3F&G*:
+
+```{r}
+# For Reactome pathways.
+  # Select one of the following pathways to plot.
+  pathreact <- c("IFN signaling", "Apoptosis", "Stabilization of p53", "Translation initiation", "rRNA processing")
+  path.to.plot <- pathreact[5]
+  # Plot gsea. 
+  
+  # pdf(paste0("../figures/Figure3F_GSEA_", path.to.plot, ".pdf") %>% str_remove_all(pattern = " "))
+  plotEnrichment(gmt.reac[[path.to.plot]], ranks) + 
+  ggtitle(path.to.plot) +
+  xlab("Gene Ranking") +
+  ylab("Enrichment score") + 
+  annotate(geom = "text", 
+           x = ifelse(reac.gsea[reac.gsea$pathway == path.to.plot, "ES"] < 0, 0, 7500), 
+           y = as.numeric(reac.gsea[reac.gsea$pathway == path.to.plot, "ES"]*.85), 
+           label = paste0("NES: ", format(as.numeric(reac.gsea[reac.gsea$pathway == path.to.plot, "NES"]), digits = 3),
+                          "\nFDR: ", format(as.numeric(reac.gsea[reac.gsea$pathway == path.to.plot, "padj"]), digits = 3)), hjust = 0, size = 6) + 
+  theme(plot.title = element_text(hjust = 0.5, size = 14),
+        axis.line = element_blank(),
+        axis.text = element_text(size = 18, colour = "black"),
+        axis.title = element_text(size = 18),
+        axis.ticks.length = unit(.25, "cm"),
+        panel.border = element_rect(colour = "black", fill = NA, size = 0.75),
+        panel.background = element_blank(),
+        panel.grid = element_blank())
+  # dev.off()
+  
+# For manually curated pathways.
+  # Select one of the following pathways to plot.
+  pathperso <- c("Central memory (from Pace et al. 2018)", "Co-inhibitory molecules (from Chihara et al. 2018)", "GSE10239_MEMORY_VS_KLRG1HIGH_EFF_CD8_TCELL_DN")
+  path.to.plot2 <- pathperso[3]
+  # Plot gsea. 
+  
+  # pdf(paste0("../figures/Figure3F_GSEA_", path.to.plot2, ".pdf") %>% str_remove_all(pattern = " "))
+  plotEnrichment(gmt.perso[[path.to.plot2]], ranks) + 
+  ggtitle(path.to.plot2) +
+  xlab("Gene Ranking") +
+  ylab("Enrichment score") + 
+  annotate(geom = "text", 
+           x = ifelse(perso.gsea[perso.gsea$pathway == path.to.plot2, "ES"] < 0, 0, 7500), 
+           y = as.numeric(perso.gsea[perso.gsea$pathway == path.to.plot2, "ES"]*.85), 
+           label = paste0("NES: ", format(as.numeric(perso.gsea[perso.gsea$pathway == path.to.plot2, "NES"]), digits = 3),
+                          "\nFDR: ", format(as.numeric(perso.gsea[perso.gsea$pathway == path.to.plot2, "padj"]), digits = 3)), hjust = 0, size = 6) + 
+  theme(plot.title = element_text(hjust = 0.5, size = 14),
+        axis.line = element_blank(),
+        axis.text = element_text(size = 18, colour = "black"),
+        axis.title = element_text(size = 18),
+        axis.ticks.length = unit(.25, "cm"),
+        panel.border = element_rect(colour = "black", fill = NA, size = 0.75),
+        panel.background = element_blank(),
+        panel.grid = element_blank())
+  # dev.off()
+```
+
+Comparison with  Controller and Progressor signatures (*Fig 4A&B*):
+
+```{r}
+# Controller signature.
+  # Select one of the following pathways to plot.
+  path.to.plot2 <- "GSE24081_CONTROLLER_VS_PROGRESSOR_HIV_SPECIFIC_CD8_TCELL_UP"
+  # Plot gsea. 
+  
+  # pdf("../figures/Figure4B_GSEA_ControllerSignature.pdf")
+  plotEnrichment(gmt.perso[[path.to.plot2]], ranks) + 
+  ggtitle("Controller signature") +
+  xlab("Gene Ranking") +
+  ylab("Enrichment score") + 
+  annotate(geom = "text", 
+           x = ifelse(perso.gsea[perso.gsea$pathway == path.to.plot2, "ES"] < 0, 0, 7500), 
+           y = as.numeric(perso.gsea[perso.gsea$pathway == path.to.plot2, "ES"]*.85), 
+           label = paste0("NES: ", format(as.numeric(perso.gsea[perso.gsea$pathway == path.to.plot2, "NES"]), digits = 3),
+                          "\nFDR: ", format(as.numeric(perso.gsea[perso.gsea$pathway == path.to.plot2, "padj"]), digits = 3)), hjust = 0, size = 6) + 
+  theme(plot.title = element_text(hjust = 0.5, size = 14),
+        axis.line = element_blank(),
+        axis.text = element_text(size = 18, colour = "black"),
+        axis.title = element_text(size = 18),
+        axis.ticks.length = unit(.25, "cm"),
+        panel.border = element_rect(colour = "black", fill = NA, size = 0.75),
+        panel.background = element_blank(),
+        panel.grid = element_blank())
+  # dev.off()
+  
+# Progressor signature.
+  # Select one of the following pathways to plot.
+  path.to.plot2 <- "GSE24081_CONTROLLER_VS_PROGRESSOR_HIV_SPECIFIC_CD8_TCELL_DN"
+  # Plot gsea. 
+  
+  # pdf("../figures/Figure4A_ProgressorSignature.pdf")
+  plotEnrichment(gmt.perso[[path.to.plot2]], ranks) + 
+  ggtitle("Progressor signature") +
+  xlab("Gene Ranking") +
+  ylab("Enrichment score") + 
+  annotate(geom = "text", 
+           x = ifelse(perso.gsea[perso.gsea$pathway == path.to.plot2, "ES"] < 0, 0, 7500), 
+           y = as.numeric(perso.gsea[perso.gsea$pathway == path.to.plot2, "ES"]*.85), 
+           label = paste0("NES: ", format(as.numeric(perso.gsea[perso.gsea$pathway == path.to.plot2, "NES"]), digits = 3),
+                          "\nFDR: ", format(as.numeric(perso.gsea[perso.gsea$pathway == path.to.plot2, "padj"]), digits = 3)), hjust = 0, size = 6) + 
+  theme(plot.title = element_text(hjust = 0.5, size = 14),
+        axis.line = element_blank(),
+        axis.text = element_text(size = 18, colour = "black"),
+        axis.title = element_text(size = 18),
+        axis.ticks.length = unit(.25, "cm"),
+        panel.border = element_rect(colour = "black", fill = NA, size = 0.75),
+        panel.background = element_blank(),
+        panel.grid = element_blank())
+  # dev.off()
+```
+
+# **7. NEW VS OLD CLONE**
+
+Create new sce object containing only the new and old clones of the FL8-specific response at LATE (*CASSTGTGSAQETQYF* being the old clone and *CASSEFGAAVYEQYF* the new one):
+
+```{r}
+clono <- sce[, sce$CDR3B %in% c("CASSEFGAAVYEQYF", "CASSTGTGSAQETQYF") & sce$Patient.TP == "PS24FL8LATE"]
+```
+
+We  need to finetune the parameters associated with the plsDA : the number of componant and the number of variable (genes) to select for each componant
+
+```{r, Finetuning the plsDA parameters, results="hide", echo = FALSE}
+# Extract data for clono.
+X <- t(assay(clono, "logcounts"))
+Y <- as.factor(clono$CDR3B)
+# Possible keepX values that will be tested for each comp.
+list.keepX <- c(seq(10, 50, 10))
+
+set.seed(100)
+tune.splsda <- tune.splsda(X, Y, ncomp = 6, validation = 'Mfold', folds = 5, progressBar = T, dist = 'max.dist', test.keepX = list.keepX, nrepeat = 50, cpus = 20)
+choice.keepX <- tune.splsda$choice.keepX[1:6]
+splsda.res <- splsda(X, Y, ncomp = 6, keepX = choice.keepX)
+
+# The code above can take a lot of time to run. Alternatively, load the already tuned sldspa:
+splsda.res <- readRDS("../data/AdditionnalFiles/splsda_tuned.RDS")
+```
+
+## Representation  of individuals cells (*Fig 5D top*)
+
+```{r, Plotting Individuals (cells) , echo = FALSE, fig.height=6 , fig.width=6}
+comp1 <- 1
+comp2 <- 2
+
+# pdf("../figures/Figure5D_PlottingIndividualCells_splsDA.pdf")
+plot <- plotIndiv(splsda.res, 
+          ind.names = F, 
+          point.lwd = 1.5,
+          pch = 21,
+          cex = 3,
+          ellipse = T, 
+          legend = F, 
+          X.label = paste0("sPLS-DA ", comp1, " - ", format(splsda.res$prop_expl_var$X[comp1]*100, scientific=FALSE, digits=3), "%"), 
+          Y.label = paste0("sPLS-DA ", comp2, " - ", format(splsda.res$prop_expl_var$X[comp2]*100, scientific=FALSE, digits=3), "%"), 
+          title = paste0("Componant ", comp1, " vs ", comp2), 
+          col.per.group = c("#E68613","#A08CFF"), 
+          comp = c(comp1,comp2))
+# dev.off()
+```
+
+## Variable influencing each componant - Correlation circle (*Fig 5D bottom*)
+
+```{r, Plotting correlation circle with genes, echo = FALSE, fig.height=6, fig.width=6}
+# Create function for the circle
+circleFun <- function(center = c(0,0),diameter = 1, npoints = 100){
+ r = diameter / 2
+tt <- seq(0,2*pi,length.out = npoints)
+xx <- center[1] + r * cos(tt)
+yy <- center[2] + r * sin(tt)
+return(data.frame(x = xx, y = yy))
+}
+dat <- circleFun(c(0,0),2,npoints = 100)
+dat2 <- circleFun(c(0,0),0.9,npoints = 100)
+
+# Chose componants to plot
+comp.select <- 1
+comp <- c(1,2)
+a <- plotVar(splsda.res, comp.select = comp.select, comp = comp, var.names = T, cutoff = 0.35, font = 1, col = "#E68613", rad.in = 0.4, cex = 4, style = "ggplot2", title = paste0("Genes influencing comp ", comp.select))
+# Color for comp 1 and 2
+incol1 <- "#A08CFF"
+incol2 <- "#E68613"
+col <- a$x
+col[col < 0] <- "#8d64d1"
+col[col != "#8d64d1"] <- "#E67500"
+
+# Plot
+
+# pdf("../figures/Figure5D_CorrelationCircleOfFeatures_splsDA.pdf")
+ggplot(a, aes(x = x, y = y)) + 
+  geom_hline(yintercept=0, linetype="dashed", color = "grey", size=1) + 
+  geom_vline(xintercept=0, linetype="dashed", color = "grey", size=1) +
+  geom_path(data = dat) + 
+  geom_path(data = dat2) +
+  geom_point(aes(colour = cut(x, c(-1, 0, 1))), size = 4) + 
+  geom_point(shape =1 , size = 4, colour = col, stroke = 1) +
+  scale_color_manual(name = "Clonotype", values = c(incol1, incol2), labels = c("Old clone", "New clone")) + 
+  xlab(paste0("Componant ", comp[1], " - ", format(splsda.res$prop_expl_var$X[comp[1]]*100, scientific=FALSE, digits=3), "%")) +
+  ylab(paste0("Componant ", comp[2], " - ", format(splsda.res$prop_expl_var$X[comp[2]]*100, scientific=FALSE, digits=3), "%")) + 
+  xlim(-1, 1) + ylim(-1, 1) + 
+  theme_minimal() +
+  theme(panel.grid = element_blank(),
+        axis.line.x = element_line(linewidth = 0.25),
+        axis.line.y = element_line(linewidth = 0.25), 
+        plot.title = element_text(face = "bold", hjust = 0.5),
+        legend.position = "none")
+# dev.off()
+```
+
+## Heatmap of the 50 genes influencing componant 1 (*Fig 5E*)
+
+```{r}
+#Create new sce object with only the genes of interest.
+heatmapclono <- clono[a$names]
+heatmapclono$CDR3B <- factor(heatmapclono$CDR3B, levels = c("CASSEFGAAVYEQYF","CASSTGTGSAQETQYF"))
+colors <- list(CDR3B = c("CASSTGTGSAQETQYF" = "#A08CFF", "CASSEFGAAVYEQYF" = "#E68613"))
+
+# Plot the heatmap.
+
+# pdf("../figures/Figure5E_HeatmapOfTop50Features.pdf")
+plotHeatmap(
+  heatmapclono,
+  rownames(heatmapclono),
+  exprs_values = "logcounts",
+  colour_columns_by = "CDR3B",
+  column_annotation_colors = colors[1],
+  order_columns_by = "CDR3B",
+  show_colnames = FALSE,
+  center = T,
+  cluster_cols= T,
+  cutree_cols = 4,
+  annotation_legend	= F,
+  treeheight_row = 0, 
+  treeheight_col = 0,
+  show_rownames = T
+)
+# dev.off()
+```
+
+## GSEA bewteen New and Old clones
+
+Performing GSEA between both clones with the `fgsea` package (*Fig 5F*). Some pathways were pre-selected based on the EARLY vs LATE comparison. (These pathways can be found in the `My_SelectedPathwaysClonotypes_GSEA.gmt` file):
+
+```{r}
+# Using the wilcoxon.sce function to extract logFC of all genes between both clones.
+df.clono <- wilcoxon.sce(sce.object = clono, group.by = "CDR3B", compareTo = 2)
+
+# Extracting log fold change for the df object previously created. 
+df.clono <- df.clono[order(df.clono$logFC.CASSEFGAAVYEQYF, decreasing = T),]
+ranks <- df.clono$logFC.CASSEFGAAVYEQYF
+names(ranks) <- df.clono$Genes
+
+# Running GSEA with the manually curated pathways.
+gmt.clono <- qusage::read.gmt("../data/AdditionnalFiles/My_SelectedPathwaysClonotypes_GSEA.gmt")
+set.seed(100)
+perso.clono.gsea <- fgsea(pathways = gmt.clono, 
+                  stats    = ranks,
+                  minSize  = 15,
+                  maxSize  = 500)
+```
+
+Plotting IL6-JAK/STAT3 signaling pathway :
+```{r}
+# For Reactome pathways.
+  # Select pathway to plot.
+  path.clono.plot <- "IL6-JAK/STAT3 signalling"
+  # Plot gsea. 
+
+  # pdf("../figures/Figure5F_GSEAClones_IL6JAKSTAT3-Signaling.pdf")
+  plotEnrichment(gmt.clono[[path.clono.plot]], ranks) + 
+  ggtitle(path.clono.plot) +
+  xlab("Gene Ranking") +
+  ylab("Enrichment score") + 
+  annotate(geom = "text", 
+           x = ifelse(perso.clono.gsea[perso.clono.gsea$pathway == path.clono.plot, "ES"] < 0, 0, 7500), 
+           y = as.numeric(perso.clono.gsea[perso.clono.gsea$pathway == path.clono.plot, "ES"]*.85), 
+           label = paste0("NES: ", format(as.numeric(perso.clono.gsea[perso.clono.gsea$pathway == path.clono.plot, "NES"]), digits = 3),
+                          "\nFDR: ", format(as.numeric(perso.clono.gsea[perso.clono.gsea$pathway == path.clono.plot, "padj"]), digits = 3)), hjust = 0, size = 6) + 
+  theme(plot.title = element_text(hjust = 0.5, size = 14),
+        axis.line = element_blank(),
+        axis.text = element_text(size = 18, colour = "black"),
+        axis.title = element_text(size = 18),
+        axis.ticks.length = unit(.25, "cm"),
+        panel.border = element_rect(colour = "black", fill = NA, size = 0.75),
+        panel.background = element_blank(),
+        panel.grid = element_blank())
+  # dev.off()
+```
+
+Plotting IFN signaling pathway :
+```{r}
+# For Reactome pathways.
+  # Select pathway to plot.
+  path.clono.plot <- "IFN signaling"
+  # Plot gsea. 
+
+  # pdf(paste0("../figures/Figure5F_GSEAClones_", path.clono.plot, ".pdf") %>% str_remove_all(pattern = " "))
+  plotEnrichment(gmt.clono[[path.clono.plot]], ranks) + 
+  ggtitle(path.clono.plot) +
+  xlab("Gene Ranking") +
+  ylab("Enrichment score") + 
+  annotate(geom = "text", 
+           x = ifelse(perso.clono.gsea[perso.clono.gsea$pathway == path.clono.plot, "ES"] < 0, 0, 7500), 
+           y = as.numeric(perso.clono.gsea[perso.clono.gsea$pathway == path.clono.plot, "ES"]*.85), 
+           label = paste0("NES: ", format(as.numeric(perso.clono.gsea[perso.clono.gsea$pathway == path.clono.plot, "NES"]), digits = 3),
+                          "\nFDR: ", format(as.numeric(perso.clono.gsea[perso.clono.gsea$pathway == path.clono.plot, "padj"]), digits = 3)), hjust = 0, size = 6) + 
+  theme(plot.title = element_text(hjust = 0.5, size = 14),
+        axis.line = element_blank(),
+        axis.text = element_text(size = 18, colour = "black"),
+        axis.title = element_text(size = 18),
+        axis.ticks.length = unit(.25, "cm"),
+        panel.border = element_rect(colour = "black", fill = NA, size = 0.75),
+        panel.background = element_blank(),
+        panel.grid = element_blank())
+  # dev.off()
+```
+
+Plotting negative regulation of immune response pathway :
+```{r}
+# For Reactome pathways.
+  # Select pathway to plot.
+  path.clono.plot <- "Negative regulation of immune response"
+  # Plot gsea. 
+
+  # pdf(paste0("../figures/Figure5F_GSEAClones_", path.clono.plot, ".pdf") %>% str_remove_all(pattern = " "))
+  plotEnrichment(gmt.clono[[path.clono.plot]], ranks) + 
+  ggtitle(path.clono.plot) +
+  xlab("Gene Ranking") +
+  ylab("Enrichment score") + 
+  annotate(geom = "text", 
+           x = ifelse(perso.clono.gsea[perso.clono.gsea$pathway == path.clono.plot, "ES"] < 0, 0, 7500), 
+           y = as.numeric(perso.clono.gsea[perso.clono.gsea$pathway == path.clono.plot, "ES"]*.85), 
+           label = paste0("NES: ", format(as.numeric(perso.clono.gsea[perso.clono.gsea$pathway == path.clono.plot, "NES"]), digits = 3),
+                          "\nFDR: ", format(as.numeric(perso.clono.gsea[perso.clono.gsea$pathway == path.clono.plot, "padj"]), digits = 3)), hjust = 0, size = 6) + 
+  theme(plot.title = element_text(hjust = 0.5, size = 14),
+        axis.line = element_blank(),
+        axis.text = element_text(size = 18, colour = "black"),
+        axis.title = element_text(size = 18),
+        axis.ticks.length = unit(.25, "cm"),
+        panel.border = element_rect(colour = "black", fill = NA, size = 0.75),
+        panel.background = element_blank(),
+        panel.grid = element_blank())
+  # dev.off()
+```
+
+Plotting Terminal exhausted (from Miller et al. 2019) pathway :
+```{r}
+# For Reactome pathways.
+  # Select pathway to plot.
+  path.clono.plot <- "Terminal exhausted (from Miller et al. 2019)"
+  # Plot gsea. 
+
+  # pdf(paste0("../figures/Figure5F_GSEAClones_", path.clono.plot, ".pdf") %>% str_remove_all(pattern = " "))
+  plotEnrichment(gmt.clono[[path.clono.plot]], ranks) + 
+  ggtitle(path.clono.plot) +
+  xlab("Gene Ranking") +
+  ylab("Enrichment score") + 
+  annotate(geom = "text", 
+           x = ifelse(perso.clono.gsea[perso.clono.gsea$pathway == path.clono.plot, "ES"] < 0, 0, 7500), 
+           y = as.numeric(perso.clono.gsea[perso.clono.gsea$pathway == path.clono.plot, "ES"]*.85), 
+           label = paste0("NES: ", format(as.numeric(perso.clono.gsea[perso.clono.gsea$pathway == path.clono.plot, "NES"]), digits = 3),
+                          "\nFDR: ", format(as.numeric(perso.clono.gsea[perso.clono.gsea$pathway == path.clono.plot, "padj"]), digits = 3)), hjust = 0, size = 6) + 
+  theme(plot.title = element_text(hjust = 0.5, size = 14),
+        axis.line = element_blank(),
+        axis.text = element_text(size = 18, colour = "black"),
+        axis.title = element_text(size = 18),
+        axis.ticks.length = unit(.25, "cm"),
+        panel.border = element_rect(colour = "black", fill = NA, size = 0.75),
+        panel.background = element_blank(),
+        panel.grid = element_blank())
+  # dev.off()
+```
+
+Plotting Stabilization of p53 pathway :
+```{r}
+# For Reactome pathways.
+  # Select pathway to plot.
+  path.clono.plot <- "Stabilization of p53"
+  # Plot gsea. 
+
+  # pdf(paste0("../figures/Figure5F_GSEAClones_", path.clono.plot, ".pdf") %>% str_remove_all(pattern = " "))
+  plotEnrichment(gmt.clono[[path.clono.plot]], ranks) + 
+  ggtitle(path.clono.plot) +
+  xlab("Gene Ranking") +
+  ylab("Enrichment score") + 
+  annotate(geom = "text", 
+           x = ifelse(perso.clono.gsea[perso.clono.gsea$pathway == path.clono.plot, "ES"] < 0, 0, 7500), 
+           y = as.numeric(perso.clono.gsea[perso.clono.gsea$pathway == path.clono.plot, "ES"]*.85), 
+           label = paste0("NES: ", format(as.numeric(perso.clono.gsea[perso.clono.gsea$pathway == path.clono.plot, "NES"]), digits = 3),
+                          "\nFDR: ", format(as.numeric(perso.clono.gsea[perso.clono.gsea$pathway == path.clono.plot, "padj"]), digits = 3)), hjust = 0, size = 6) + 
+  theme(plot.title = element_text(hjust = 0.5, size = 14),
+        axis.line = element_blank(),
+        axis.text = element_text(size = 18, colour = "black"),
+        axis.title = element_text(size = 18),
+        axis.ticks.length = unit(.25, "cm"),
+        panel.border = element_rect(colour = "black", fill = NA, size = 0.75),
+        panel.background = element_blank(),
+        panel.grid = element_blank())
+  # dev.off()
+```
+
+Plotting apoptosis pathway :
+```{r}
+# For Reactome pathways.
+  # Select pathway to plot.
+  path.clono.plot <- "Apoptosis"
+  # Plot gsea. 
+
+  # pdf(paste0("../figures/Figure5F_GSEAClones_", path.clono.plot, ".pdf") %>% str_remove_all(pattern = " "))
+  plotEnrichment(gmt.clono[[path.clono.plot]], ranks) + 
+  ggtitle(path.clono.plot) +
+  xlab("Gene Ranking") +
+  ylab("Enrichment score") + 
+  annotate(geom = "text", 
+           x = ifelse(perso.clono.gsea[perso.clono.gsea$pathway == path.clono.plot, "ES"] < 0, 0, 7500), 
+           y = as.numeric(perso.clono.gsea[perso.clono.gsea$pathway == path.clono.plot, "ES"]*.85), 
+           label = paste0("NES: ", format(as.numeric(perso.clono.gsea[perso.clono.gsea$pathway == path.clono.plot, "NES"]), digits = 3),
+                          "\nFDR: ", format(as.numeric(perso.clono.gsea[perso.clono.gsea$pathway == path.clono.plot, "padj"]), digits = 3)), hjust = 0, size = 6) + 
+  theme(plot.title = element_text(hjust = 0.5, size = 14),
+        axis.line = element_blank(),
+        axis.text = element_text(size = 18, colour = "black"),
+        axis.title = element_text(size = 18),
+        axis.ticks.length = unit(.25, "cm"),
+        panel.border = element_rect(colour = "black", fill = NA, size = 0.75),
+        panel.background = element_blank(),
+        panel.grid = element_blank())
+  # dev.off()
+```
+
+Plotting Naive (from Szabo et al. 2019) pathway :
+```{r}
+# For Reactome pathways.
+  # Select pathway to plot.
+  path.clono.plot <- "Naive (from Szabo et al. 2019)"
+  # Plot gsea. 
+
+  # pdf(paste0("../figures/Figure5F_GSEAClones_", path.clono.plot, ".pdf") %>% str_remove_all(pattern = " "))
+  plotEnrichment(gmt.clono[[path.clono.plot]], ranks) + 
+  ggtitle(path.clono.plot) +
+  xlab("Gene Ranking") +
+  ylab("Enrichment score") + 
+  annotate(geom = "text", 
+           x = ifelse(perso.clono.gsea[perso.clono.gsea$pathway == path.clono.plot, "ES"] < 0, 0, 7500), 
+           y = as.numeric(perso.clono.gsea[perso.clono.gsea$pathway == path.clono.plot, "ES"]*.85), 
+           label = paste0("NES: ", format(as.numeric(perso.clono.gsea[perso.clono.gsea$pathway == path.clono.plot, "NES"]), digits = 3),
+                          "\nFDR: ", format(as.numeric(perso.clono.gsea[perso.clono.gsea$pathway == path.clono.plot, "padj"]), digits = 3)), hjust = 0, size = 6) + 
+  theme(plot.title = element_text(hjust = 0.5, size = 14),
+        axis.line = element_blank(),
+        axis.text = element_text(size = 18, colour = "black"),
+        axis.title = element_text(size = 18),
+        axis.ticks.length = unit(.25, "cm"),
+        panel.border = element_rect(colour = "black", fill = NA, size = 0.75),
+        panel.background = element_blank(),
+        panel.grid = element_blank())
+  # dev.off()
+```
+
+Plotting Central memory (from Pace et al. 2018) pathway :
+```{r}
+# For Reactome pathways.
+  # Select pathway to plot.
+  path.clono.plot <- "Central memory (from Pace et al. 2018)"
+  # Plot gsea. 
+
+  # pdf(paste0("../figures/Figure5F_GSEAClones_", path.clono.plot, ".pdf") %>% str_remove_all(pattern = " "))
+  plotEnrichment(gmt.clono[[path.clono.plot]], ranks) + 
+  ggtitle(path.clono.plot) +
+  xlab("Gene Ranking") +
+  ylab("Enrichment score") + 
+  annotate(geom = "text", 
+           x = ifelse(perso.clono.gsea[perso.clono.gsea$pathway == path.clono.plot, "ES"] < 0, 0, 7500), 
+           y = as.numeric(perso.clono.gsea[perso.clono.gsea$pathway == path.clono.plot, "ES"]*.85), 
+           label = paste0("NES: ", format(as.numeric(perso.clono.gsea[perso.clono.gsea$pathway == path.clono.plot, "NES"]), digits = 3),
+                          "\nFDR: ", format(as.numeric(perso.clono.gsea[perso.clono.gsea$pathway == path.clono.plot, "padj"]), digits = 3)), hjust = 0, size = 6) + 
+  theme(plot.title = element_text(hjust = 0.5, size = 14),
+        axis.line = element_blank(),
+        axis.text = element_text(size = 18, colour = "black"),
+        axis.title = element_text(size = 18),
+        axis.ticks.length = unit(.25, "cm"),
+        panel.border = element_rect(colour = "black", fill = NA, size = 0.75),
+        panel.background = element_blank(),
+        panel.grid = element_blank())
+  # dev.off()
+```

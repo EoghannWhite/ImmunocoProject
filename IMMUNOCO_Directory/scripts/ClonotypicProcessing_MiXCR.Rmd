@@ -1,0 +1,102 @@
+---
+title: 'MixCR: bash commands'
+author: "Eoghann White"
+date: "2024-07-10"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+  pdf_document:
+    toc: yes
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval=FALSE, warning = FALSE, message = FALSE)
+```
+
+# **AIM OF THE SCRIPT**
+The aim of this script is to process smaller FASTQ files generated from STAR alignments, excluding TCR-associated genes from the genome index prior to alignment. By doing so, the TCR-associated genes are specifically excluded from alignment against the human genome. The output consists of smaller FASTQ files containing unmapped reads that likely encompass TCR-associated sequences. These FASTQ files are subsequently processed using MiXCR to identify TCR genes and reconstruct the CDR3 sequences for both beta and alpha chains. This approach is quicker and more efficient, as the smaller size of these fastq files reduces the computational load and processing time required by MiXCR.
+
+# **1. THE MiXCR PIPELINE STEP-BY-STEP**
+
+## 1.1  Align raw reads
+```{bash}
+mixcr align -s hsa -p rna-seq -OallowPartialAlignments=true Cell1_Read1_Unmapped.out.mate1 Cell1_Read2_Unmapped.out.mate2 alignments.vdjca
+```
+
+## 1.2  Assembling partial reads
+Because of the nature of single-cell RNAseq data, reads form randomly fragmented libraries may cover only a part of CDR3. The assembly of overlapping fragmented sequencing reads allow the reconstruction of CDR3 into long-enough segment. It is recommended to perform two iterations of the `assemblePartial` command to optimize the results. 
+```{bash}
+mixcr assemblePartial alignments.vdjca alignmentsRescued_1.vdjca
+mixcr assemblePartial alignmentsRescued_1.vdjca alignmentsRescued_2.vdjca
+```
+
+## 1.3  Extend TCR alignements for complete coverage of CDR3 using germline sequence
+In certain instances, such as with short reads, the CDR3 region may only be partially covered after assembling the partial reads. Typically, a significant portion of the assembled reads (contigs) require only a few nucleotides at the 5' or 3' end to complete the sequence and fully cover the CDR3 region. The `extendAlignments` command uses germline sequence segments to fill these gaps if the V or J gene in the contig is uniquely identified.
+```{bash}
+mixcr extend alignmentsRescued_2.vdjca alignmentsRescued_2_extended.vdjca 
+```
+
+## 1.4  Assembling clonotypes
+The `assemble` command constructs clonotypes from the alignments obtained using the `align` command. For a detailed explanation, please refer to the MiXCR website.
+```{bash}
+mixcr assemble alignmentsRescued_2_extended.vdjca clones.clns
+```
+
+## 1.5  Export the results
+We can either export all the clonotypes obtained :
+```{bash}
+mixcr exportClones clones.clns clones.txt
+```
+
+Or we can export only the desired immunological chains with the `-c <chain>` option :
+```{bash}
+mixcr exportClones -c TRB clones.clns clones.TRB.txt # to export the TCR beta chain
+mixcr exportClones -c TRA clones.clns clones.TRA.txt # to export the TCR alpha chain
+mixcr exportClones -c TCR clones.clns clones.TCR.txt # to export all TCR chains
+```
+
+# **2. EVERYTHING TOGETHER**
+
+Putting it all together: Below is a single command to execute the step-by-step approach, which exports TRB, TRA, and all TCR chains combined in this case. Note that this command will not generate a report file like the `analyze shotgun` command does. 
+
+In this setup, each patient's FASTQ files are organized in a dedicated folder, with subfolders for each index or cell sequence. The command iterates through all patient folders, and within each patient's folder, it processes the paired-end FASTQ files found in the subfolders corresponding to each cell sequence. This structure ensures that the command can handle the data for each patient individually, navigating through the subfolders to access and process the paired-end FASTQ files for each cell sequence specific to that patient. 
+
+Each output is directed to another directory constructed in a similar way. For each patient, a corresponding output folder is created, containing subfolders for each index or cell sequence, mirroring the input directory structure. This organization facilitates easy tracking and management of the processed data.
+
+```{bash}
+path=/Path/to/raw/fastq/root/directory
+targetDIR=/Path/to/target/directory
+patients=$(ls ${path})
+
+for p in $patients
+do
+  # Create directories for patient
+  mkdir -p ${targetDIR}/${p}/{TCR,TRA,TRB}
+  
+  indexes=$(ls ${path}/${p})
+  for i in $indexes
+  do
+    cd ${path}/${p}/${i}
+    # Perform alignment and assembly
+    mixcr align -s hsa -p rna-seq -OallowPartialAlignments=true ${p}_${i}_Unmapped.out.mate1 ${p}_${i}_Unmapped.out.mate2 alignments.vdjca
+    mixcr assemblePartial alignments.vdjca alignmentsRescued_1.vdjca
+    mixcr assemblePartial alignmentsRescued_1.vdjca alignmentsRescued_2.vdjca
+    mixcr extend alignmentsRescued_2.vdjca alignmentsRescued_2_extended.vdjca
+    mixcr assemble alignmentsRescued_2_extended.vdjca clones.clns
+    # Export clones
+    mixcr exportClones -c TCR clones.clns ${p}_${i}.TCR.txt
+    mixcr exportClones -c TRA clones.clns ${p}_${i}.TRA.txt
+    mixcr exportClones -c TRB clones.clns ${p}_${i}.TRB.txt
+    # Move results to target directories
+    mv ${p}_${i}.TCR.txt ${targetDIR}/${p}/TCR/
+    mv ${p}_${i}.TRA.txt ${targetDIR}/${p}/TRA/
+    mv ${p}_${i}.TRB.txt ${targetDIR}/${p}/TRB/
+    
+    echo "*** Clonotypes were successfully extracted for ${i} in ${p} ***"
+  done
+  echo "***** Patient ${p} completely done! *****"
+done
+```

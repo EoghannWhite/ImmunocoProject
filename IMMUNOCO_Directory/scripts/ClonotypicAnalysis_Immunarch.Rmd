@@ -1,0 +1,223 @@
+---
+title: "ClonotypicAnalysis_Immunarch"
+author: "Eoghann White"
+date: "2024-07-18"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+  pdf_document:
+    toc: yes
+editor_options:
+  chunk_output_type: console
+---
+
+# **AIM OF THIS SCRIPT**
+
+This script performs comprehensive TCR analysis using the Immunarch package, focusing on the tracking and visualization of clonotypes across predefined time points or groups. It utilizes the output produced by the `ClonotypicProcessing_VDJTools.Rmd` script, stored in the `IMMUNOCO_Directory/data/TCR/processed` directory. The script includes the following main steps:
+
+1. *Loading Libraries*: Load necessary libraries for TCR analysis, data manipulation, and visualization.
+2. *Importing Data*: Import TCR sequencing data for both beta and alpha chains.
+3. *Formatting Data*: Correct the assignment of reads to clones by setting each cell's clone count to one.
+4. *Tracking Clonotypes Across Time-Points*: Basic visualization of clonotypes across selected groups or time points.
+5. *Merging Uninformative Cells*: Group unique clonotypes composed of a single cell into 'MergedClones' to enhance plot clarity.
+6. *Custom Color Plots*: Assign specific colors to clonotypes and generate plots with customized color schemes similar to Figure 5 A, B, and C.
+
+# **1. LOAD LIBRARIES**
+```{r}
+# TCR analysis.
+library(immunarch)
+
+# Data manipulation and visualization.
+library(tidyverse)
+library(scales)
+
+# Alluvial and friends.
+# add relevant package !
+```
+
+# **2. IMPORT DATA**
+```{r}
+tcr.seq.beta <- repLoad("../data/TCR/processed/VDJToolsOutput_TRB/")
+tcr.seq.alph <- repLoad("../data/TCR/processed/VDJToolsOutput_TRA/")
+```
+
+# **FORMAT DATA**
+
+Immunarch incorrectly assigns the number of reads to the number of clones detected for each individual cell. To rectify this, adjust the Clones column to set each cell to 1.
+```{r}
+# For the beta chain.
+for(df in names(tcr.seq.beta$data)){
+  tcr.seq.beta$data[[df]]$Clones <- 1
+}
+# For the alpha chain.
+for(df in names(tcr.seq.alph$data)){
+  tcr.seq.alph$data[[df]]$Clones <- 1
+}
+```
+
+# **TRACKING CLONOTYPES ACROSS TIME-POINTS**
+
+Track and plots clonotypes across predefined time-points/groups:
+```{r}
+# Select groups to plot (e.g. "PS24FL8EARLY", "PS24FL8INT" ,"PS24FL8LATE").
+groups.to.plot <- c("HIV2-Donor1", "HIV2-Donor2")
+# Filter data to retain only the groups of interest.
+beta.filter <- tcr.seq.beta$data[names(tcr.seq.beta$data) %in% groups.to.plot]
+alph.filter <- tcr.seq.alph$data[names(tcr.seq.alph$data) %in% groups.to.plot]
+# Extract all unique clonotypes from the specified groups for comprehensive plotting.
+unique.cdr3.beta <- unique(unlist(lapply(beta.filter, function(df) df$CDR3.aa)))
+unique.cdr3.alph <- unique(unlist(lapply(alph.filter, function(df) df$CDR3.aa)))
+# Track clonotypes for plotting based on the previously defined set of unique clones.
+tracking.trb <- trackClonotypes(beta.filter, .which = unique.cdr3.beta, .col = "aa")
+tracking.tra <- trackClonotypes(alph.filter, .which = unique.cdr3.alph, .col = "aa")
+# Plotting using the vis() function.
+vis(tracking.trb) + theme(legend.position = "none")
+vis(tracking.tra) + theme(legend.position = "none")
+```
+
+# **MERGING UNINFORMATIVE CELLS**
+
+Across most time-points, there are unique clonotypes composed of a single cell that are not shared. These cells are grouped under the term 'MergedClones' to improve plot clarity. Below are some useful functions to achieve this:
+```{r}
+# Function to find elements unique to each list.
+find.unique.elements <- function(list) {
+  unique.elements.per.list <- lapply(seq_along(list), function(i) {
+    elements.in.other.lists <- unlist(list[-i])
+    unique.elements <- setdiff(unlist(list[[i]]), elements.in.other.lists)
+    return(unique.elements)
+  })
+  names(unique.elements.per.list) <- names(list)
+  return(unique.elements.per.list)
+}
+
+# Function to add "MergedClones" to the metadata for one-cell clones found at only one time-points.
+merge.onecell.clones <- function(data) {
+  # Identify clones find in only one group/time-point.
+  all.clones <- lapply(data, function(df) unique(df$CDR3.aa))
+  unique.clones.pergroup <- find.unique.elements(all.clones)
+  # Further identify among those clones the ones that are composed of only one cell.
+  for (u in names(unique.clones.pergroup)) {
+    clone.to.check <- unique.clones.pergroup[[u]]
+    df <- data[[u]]
+    onecell.clones <- clone.to.check[which(sapply(clone.to.check, function(c) sum(df$CDR3.aa == c) == 1))]
+    clone.to.merged <- onecell.clones
+    # Update data[[u]] by replacing CDR3.aa with 'MergedClones' for identified one-cell clones.
+    df$CDR3.aa[df$CDR3.aa %in% onecell.clones] <- "MergedClones"
+    data[[u]] <- df
+  }
+  return(data)
+}
+```
+
+Plot for the beta and alpha chains:
+```{r}
+# Select groups to plot (e.g. "PS24FL8EARLY", "PS24FL8INT" ,"PS24FL8LATE").
+groups.to.plot <- c("PS24FL8EARLY", "PS24FL8INT" ,"PS24FL8LATE")
+# Filter data to retain only the groups of interest.
+beta.filter <- tcr.seq.beta$data[names(tcr.seq.beta$data) %in% groups.to.plot]
+alph.filter <- tcr.seq.alph$data[names(tcr.seq.alph$data) %in% groups.to.plot]
+# Merged onecell clones 
+beta.filter <- merge.onecell.clones(beta.filter)
+alph.filter <- merge.onecell.clones(alph.filter)
+# Extract all unique clonotypes from the specified groups for comprehensive plotting.
+unique.cdr3.beta <- unique(unlist(lapply(beta.filter, function(df) df$CDR3.aa)))
+unique.cdr3.alph <- unique(unlist(lapply(alph.filter, function(df) df$CDR3.aa)))
+# Track clonotypes for plotting based on the previously defined set of unique clones.
+tracking.trb <- trackClonotypes(beta.filter, .which = unique.cdr3.beta, .col = "aa")
+tracking.tra <- trackClonotypes(alph.filter, .which = unique.cdr3.alph, .col = "aa")
+# Set up colors for the plot with MergedClones in grey.
+colors.trb <- hue_pal()(length(tracking.trb$CDR3.aa))
+colors.trb[length(colors.trb)] <- "grey80"
+colors.tra <- hue_pal()(length(tracking.tra$CDR3.aa))
+colors.tra[length(colors.tra)] <- "grey80"
+# Plotting using the vis() function.
+vis(tracking.trb) + scale_fill_manual(values = colors.trb)
+vis(tracking.tra) + scale_fill_manual(values = colors.tra)
+```
+
+# **Plots with colors similar to those in Figure 5 A, B, and C**
+
+This only applies to PS24FL8, PS24EI8 and PS03 HIV-1 specific responses:
+```{r}
+# Manually assign colors for each unique CDR3aa sequence.
+cdr3_colors <- c(
+  # For PS24FL8 beta chain. 
+  "CASSEFGAAVYEQYF" = "#E68613", 
+  "CASSLGGWTGYEQYF" = "#CD9600", 
+  "CASSPIEGIVTEAFF" = "#0CB702", 
+  "CASSPPTGSYEQYF" = "lightskyblue",
+  "CASSTGTGSAQETQYF" = "#A08CFF", 
+  "CATSRGGGLTNTGELFF" = "#C77CFF", 
+  "CSARDSVTGGGYSPLHF" = "#FF61CC",
+  # For PS24FL8 alpha chain.
+  "CAAKTSGTYKYIF" = "#F8766D", 
+  "CAVDNFNKFYF" = "lightskyblue", 
+  "CAVREAGGYQKVTF" = "#E68613", 
+  "CAVRGSGTYKYIF" = "#A08CFF",
+  "CAVRRAGTYKYIF" = "#C77CFF", 
+  "CVSYNTNAGKSTF" = "#FF61CC",
+  # For PS24EI8 beta chain. 
+  "CASSAAVKGDTQYF" = "#F8766D", 
+  "CASSEAATGRSTDTQYF" = "#E7851E", 
+  "CASSELDGMRDTQYF" = "grey60", 
+  "CASSETGGRGTEAFF" = "grey40",
+  "CASSFQGERTEAFF" = "#B2A100", 
+  "CASSLEPPGYASDEQFF" = "grey", 
+  "CASSLYPGGNEQYF" = "#0CB702", 
+  "CASSPLPSLYGYTF" = "#7CAE00",
+  "CASSPPTGSYEQYF" = "#00BC51", 
+  "CASSTGTSGRGEQFF" = "#28A3FF", 
+  "CASSVVGDSRETQYF" = "#9C8DFF", 
+  "CASTPQGARGDTEAFF" = "#D277FF",
+  "CSAREGGYEQYF" = "#F166E8", 
+  "CSARLSYEQYF" = "#FF61C7", 
+  "CSARQSYEQYF" = "grey50", 
+  "CSARRDYEQYF" = "grey60",
+  # For PS24EI8 alpha chain. 
+  "CAAPGGGGNKLTF" = "#F8766D", 
+  "CAASMADKLIF" = "#9C8DFF", 
+  "CAASNGYSTLTF" = "grey40", 
+  "CAGPGGGGANNLFF" = "grey60",
+  "CAHGGGGSEKLVF" = "#B2A100", 
+  "CAPGDGQKLLF" = "#7CAE00", 
+  "CAPSDGQKLLF" = "#F166E8", 
+  "CAPTRP_NQFYF" = "grey70",
+  "CAVDNFNKFYF" = "lightskyblue", 
+  "CAVGYTDKLIF" = "#28A3FF", 
+  "CAVRGGIW_SARQLTF" = "grey75", 
+  "CAVSDHNDMRF" = "#E7851E",
+  "CAVSSGNTPLVF" = "#0CB702", 
+  "CGTDSNTGNQFYF" = "#FF61C7", 
+  "CVVEAGGTSYGKLTF" = "#D277FF",
+  # For PS03EARLY beta chain.
+  "CASSLAGDLQPQHF" = "#CD9600", 
+  "CASSLSSSNQPQHF" = "#00BC51",
+  # For PS03LATE alpha chain.
+  "CALIPKTGAGSYQLTF" = "indianred", 
+  "CAMRAGGTSYGKLTF" = "#CD9600", 
+  "CAMRSPPGNMLTF" = "#00BC51",
+  # For all conditions.
+  "MergedClones" = "grey80")
+
+# Select groups to plot.
+groups.to.plot <- c("PS24FL8EARLY", "PS24FL8INT" ,"PS24FL8LATE")
+groups.to.plot <- c("PS24EI8EARLY", "PS24EI8INT" ,"PS24EI8LATE")
+groups.to.plot <- c("PS03EARLY" ,"PS03LATE")
+
+# Filter data to retain only the groups of interest.
+beta.filter <- tcr.seq.beta$data[names(tcr.seq.beta$data) %in% groups.to.plot]
+alph.filter <- tcr.seq.alph$data[names(tcr.seq.alph$data) %in% groups.to.plot]
+# Merged onecell clones 
+beta.filter <- merge.onecell.clones(beta.filter)
+alph.filter <- merge.onecell.clones(alph.filter)
+# Extract all unique clonotypes from the specified groups for comprehensive plotting.
+unique.cdr3.beta <- unique(unlist(lapply(beta.filter, function(df) df$CDR3.aa)))
+unique.cdr3.alph <- unique(unlist(lapply(alph.filter, function(df) df$CDR3.aa)))
+# Track clonotypes for plotting based on the previously defined set of unique clones.
+tracking.trb <- trackClonotypes(beta.filter, .which = unique.cdr3.beta, .col = "aa")
+tracking.tra <- trackClonotypes(alph.filter, .which = unique.cdr3.alph, .col = "aa")
+# Plotting using the vis() function.
+vis(tracking.trb) + scale_fill_manual(values = cdr3_colors)
+vis(tracking.tra) + scale_fill_manual(values = cdr3_colors)
+```

@@ -1,0 +1,194 @@
+---
+title: "Analysis"
+author: "Eoghann White"
+date: "2023-06-19"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# **1. LOAD LIBRARIES**
+```{r}
+# Handling and analysis of scRNAseq datasets.
+library(SingleCellExperiment)
+library(scran)
+library(scater)
+# Data manipulation/visualization.
+library(tidyverse)
+library(ggrepel)
+library(gridExtra)
+```
+
+# **2. LOAD USEFUL FUNCTIONS**
+
+```{r}
+source("MyFunctions.R")
+```
+
+# **3. IMPORT DATA**
+
+Importing normalized data and remove genes expressed in less than 10 cells in order to minimize computation time. Here we create two sce object, one with HIV2 cells + PS24 cells (called `sce24`) and the other with HIV2 cells + PS03 cells (called `sce03`):
+
+```{r}
+# Import normalized data.
+sce <- readRDS("../data/GeneExpression/processed/SingleCellExperimentObject_HGNC.RDS")
+sce <- sce[,sce$Patient %in% c("PS24EI8", "PS24FL8", "PS03", "HIV2-Donor1", "HIV2-Donor2")]
+# Keeping genes express in atleast 10 cells.
+num.cells <- nexprs(sce, byrow=T)
+sce <- sce[num.cells > 10,]
+```
+
+# **4. DIMENSIONALITY REDUCTION**
+
+Running Principal componant analysis:
+```{r}
+set.seed(700)
+sce <- runPCA(sce)
+```
+
+Plotting PCA with PS24 and HIV-2 infected patients: (*Fig 4C*):
+```{r}
+# Subset main sce object based on patients ID.
+sce24 <- sce[,sce$Patient.TP %in% c("PS24EI8EARLY", "PS24EI8LATE", "PS24FL8EARLY", "PS24FL8LATE", "HIV2-Donor1", "HIV2-Donor2")]
+# PCA colored after patient group.
+plotReducedDim(sce24, dimred = "PCA", colour_by = "TP", ncomponents = c(1,2), point_size = 4) +
+  xlim(-40, 50) + ylim(-35, 30) +
+  scale_color_manual(name = "", values = c("red", "#0CB702", "blue"), labels = c("Early", "HIV-2", "Late")) +
+  theme(plot.title = element_text(hjust = 0.5, size = 14),
+        legend.position = "none",
+        axis.text = element_text(size = 16),
+        axis.title = element_text(size = 16),
+        axis.line = element_line(linewidth = 1),
+        axis.ticks.length = unit(2, "mm"),
+        axis.ticks = element_line(linewidth = 1))
+# PCA colored after CD28 expression.
+plotReducedDim(sce24, dimred = "PCA", colour_by = "CD28_sorting", ncomponents = c(1,2), point_size = 4) +
+  xlim(-40, 50) + ylim(-35, 30) +
+  scale_color_manual(name = "", values = c("grey", "#FF9900"), labels = c("CD28-", "CD28+")) +
+  theme(plot.title = element_text(hjust = 0.5, size = 14),
+        legend.position = "none",
+        axis.text = element_text(size = 16),
+        axis.title = element_text(size = 16),
+        axis.line = element_line(linewidth = 1),
+        axis.ticks.length = unit(2, "mm"),
+        axis.ticks = element_line(linewidth = 1))
+```
+
+Plotting PCA with PS03 and HIV-2 infected patients: (*Fig 4C*):
+```{r}
+# Subset main sce object based on patients ID.
+sce03 <- sce[,sce$Patient.TP %in% c("PS03EARLY", "PS03LATE", "HIV2-Donor1", "HIV2-Donor2")]
+# PCA colored after patient group.
+plotReducedDim(sce03, dimred = "PCA", colour_by = "TP", ncomponents = c(1,2), point_size = 4) +
+  xlim(-40, 50) + ylim(-35, 30) +
+  scale_color_manual(name = "", values = c("red", "#0CB702", "blue"), labels = c("Early", "HIV-2", "Late")) +
+  theme(plot.title = element_text(hjust = 0.5, size = 14),
+        legend.position = "none",
+        axis.text = element_text(size = 16),
+        axis.title = element_text(size = 16),
+        axis.line = element_line(linewidth = 1),
+        axis.ticks.length = unit(2, "mm"),
+        axis.ticks = element_line(linewidth = 1))
+# PCA colored after CD28 expression.
+plotReducedDim(sce03, dimred = "PCA", colour_by = "CD28_sorting", ncomponents = c(1,2), point_size = 4) +
+  xlim(-40, 50) + ylim(-35, 30) +
+  scale_color_manual(name = "", values = c("grey", "#FF9900"), labels = c("CD28-", "CD28+")) +
+  theme(plot.title = element_text(hjust = 0.5, size = 14),
+        legend.position = "none",
+        axis.text = element_text(size = 16),
+        axis.title = element_text(size = 16),
+        axis.line = element_line(linewidth = 1),
+        axis.ticks.length = unit(2, "mm"),
+        axis.ticks = element_line(linewidth = 1))
+```
+
+# **5. DATA VISUALIZATION**
+
+A heatmap was generated to visualize the differential expression (DEG) across three groups (EARLY, LATE, and HIV-2), with a significance threshold set at 0.0001 to restrict the number of included genes:
+```{r}
+#Chose parameters
+threshold <- 0.0001
+direction <- "any"
+sce.object <- sce03
+
+# DEG up in EARLY
+markers <- findMarkers(sce.object, sce.object$Patient.TP, direction = direction, test = "wilcox")
+top <- markers[["PS03EARLY"]]
+earlygenes <- rownames(top[top$FDR < threshold,])
+# DEG up in LATE
+markers <- findMarkers(sce.object, sce.object$Patient.TP, direction = direction, test = "wilcox")
+top <- markers[["PS03LATE"]][,]
+lategenes <- rownames(top[top$FDR < threshold,])
+# DEG up in HIV-2
+markers <- findMarkers(sce.object, sce.object$Virus, direction = direction, test = "wilcox")
+top <- markers[["HIV-2"]][,1:5]
+hiv2genes <- rownames(top[top$FDR < threshold,])
+
+# Merged all genes together and discard duplicate genes
+mergedall <- unique(c(earlygenes, lategenes, hiv2genes))
+length(mergedall)
+
+#Create objects for plotting.
+heatmapsce <- sce03[mergedall]
+heatmapsce$Patient.TP <- factor(heatmapsce$Patient.TP, levels = c("PS03EARLY", "PS03LATE", "HIV2-Donor1", "HIV2-Donor2"))
+colors <- list(Patient.TP = c("HIV2-Donor1" = "#0CB702", "PS03EARLY" = "red", "PS03LATE" = "blue", "HIV2-Donor2" = "#CC6600"))
+```
+
+Plot Heatmap with different clustering methods. Regardless of the specific clustering method employed, LATE cells consistently exhibit closer proximity to HIV-2 cells compared to EARLY cells (*Fig S4B*):
+
+```{r}
+# Chose between 'ward.D', 'single', 'complete', 'average', 'mcquitty', 'median' or 'centroid'.
+clust.method <- "average"
+# Plot Heatmap.
+plotHeatmap(
+  heatmapsce,
+  rownames(heatmapsce),
+  exprs_values = "logcounts",
+  colour_columns_by = "Patient.TP",
+  center = T,
+  column_annotation_colors = colors[1],
+  # order_columns_by = "Patient.TP",
+  show_colnames = F, 
+  show_rownames = F,
+  legend = T, 
+  legend_labels = F, 
+  annotation_legend = F,
+  treeheight_row = 0,
+  clustering_method = clust.method,
+ treeheight_col = 20) 
+```
+
+Visualize expression of key genes associated with Stemness, Exhaustion/inhibition or IFN signaling (identified in the EARLY/LATE comparison) (*Fig 4D*):
+```{r}
+# Chose between 'ward.D', 'single', 'complete', 'average', 'mcquitty', 'median' or 'centroid'.
+clust.method <- "complete"
+# Plot Heatmap.
+genes.to.map <- c("GZMK", "IL7R", "TCF7", "NELL2", "CD28", "TC2N", 
+              "FOS", "FOSB", "JUN", "PRF1", "GZMB", "GZMH", "FGFBP2",
+              "SLA", "SLA2", "PRDM1", "ADGRG1", "NR3C1", "PLAC8", "HAVCR2", 
+              "ISG15", "IFIT3", "IFI6", "IFI27", "IFI44L","IFI35", "LY6E")
+
+heatmapsce2 <- sce03[genes.to.map]
+colors <- list(Patient.TP = c("HIV2-Donor1" = "#0CB702", "PS03EARLY" = "red", "PS03LATE" = "blue", "HIV2-Donor2" = "#CC6600"))
+plotHeatmap(
+  heatmapsce2,
+  rownames(heatmapsce2),
+  exprs_values = "logcounts",
+  colour_columns_by = "Patient.TP",
+  center = T,
+  column_annotation_colors = colors[1],
+  cluster_cols = T,
+  cluster_rows = F,
+  show_colnames = F, 
+  show_rownames = T,
+  legend = T, 
+  legend_labels = F, 
+  annotation_legend = F,
+  treeheight_row = 0,
+  clustering_method = clust.method,
+ treeheight_col = 20) 
+```

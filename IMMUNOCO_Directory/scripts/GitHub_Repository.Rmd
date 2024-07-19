@@ -1,0 +1,55 @@
+---
+title: "GitHub_Repository"
+author: "Eoghann White"
+date: "2024-07-18"
+output: html_document
+---
+
+# *1. Create new repository*
+
+Create a new repository on github: click on the + icon in the top right corner and select new repository. Fill in the repository name, description, and choose whether it will be public or private.
+
+# *2. Set up git on your local machine*
+```{bash}
+git config --global user.name "EoghannWhite"
+git config --global user.email "eoghann.white@gmail.com"
+```
+
+# *3. Initialize and push your code*
+
+```{bash}
+# Navigate to your project directory in the terminal.
+cd /Users/eoghannwhite/Documents/IMMUNOCO_Project/GitHubSubmission
+# Initialize the git repository.
+git init
+```
+
+Add code:
+```{bash}
+# Add all your project to the repository.
+git add .
+# Commit the files with a message.
+git commit -m "Initial commit"
+```
+
+Connect to the remote repository:
+```{bash}
+# Copy the URL of your GitHub repository & and add the remote repository.
+git remote add origin https://github.com/EoghannWhite/ImmunocoProject
+
+#### OR IF NEEDED ####
+
+# Change remote URL in github.
+git remote set-url origin  https://github.com/EoghannWhite/ImmunocoProject
+# Remove remote URL in github.
+git remote remove origin
+```
+
+Push your code to GitHub:
+```{bash}
+git config http.postBuffer 524288000
+git config --global http.postBuffer 4024288000
+
+git push -u origin main
+git branch -m master main
+```

@@ -1,0 +1,365 @@
+---
+title: "NewRNAseq_Analysis"
+author: "Eoghann"
+date: "2024-03-25"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# **AIM OF THE SCRIPT**
+The aim of this script is to analyze the transcriptome and the clonotypic composition of KK10-specific CD8 T cell from donor VA02.
+
+# **1. INSTALL AND LOAD LIBRARIES**
+
+```{r}
+# Seurat and Seurat associated functions.
+library(Seurat)
+library(SeuratDisk)
+library(SeuratWrappers)
+
+# Tidyverse & data manipulation.
+library(tidyverse)
+library(ggrepel)
+library(ggplot2)
+library(gridExtra)
+
+# TCR figures
+library(immunarch)
+```
+
+# **2. LOAD USEFUL FUNCTIONS**
+
+```{r}
+source("NewscRNAseq_MyFunctions.R")
+```
+
+# **3. IMPORT & FORMAT 10X DATA**
+
+Load 10X data:
+```{r}
+# Reassemble the matrix.mtx.gz file.
+parts <- list.files("../data/raw", pattern = "matrix.part-*", full.names = TRUE)
+output_file <- "../data/raw/matrix.mtx.gz"
+if (!file.exists(output_file)) {
+  for (part in parts) {
+    file.append(output_file, part)
+  }
+  message("The matrix.mtx.gz file has been reassembled successfully.")
+} else {
+  message("The matrix.mtx.gz file already exists.")
+}
+# Load the dataset.
+raw.data <- Read10X("../data/raw/")
+# Create gene expression matrix. 
+gene.matrix <- raw.data$`Gene Expression` %>% as.matrix()
+```
+
+Format antibody capture data:
+```{r}
+# Load ab.capture. 
+ab.capture <- raw.data$`Antibody Capture` %>% as.matrix()
+# Select cell barcodes detected in both gene.matrix and ab.capture.
+joint.bcs <- intersect(colnames(gene.matrix), colnames(ab.capture))
+# Subset gene.matrix and ab.capture by joint cell barcodes.
+gene.matrix <- gene.matrix[, joint.bcs]
+ab.capture <- as.matrix(ab.capture[, joint.bcs])
+# Change ab.capture rownames based on the corresponding timepoints.
+ab.capture <- ab.capture %>% as.data.frame()
+rownames(ab.capture) <- paste0("TP", 1:6)
+ab.capture <- ab.capture %>% as.matrix()
+```
+
+Create seurat object:
+```{r}
+data <- CreateSeuratObject(counts = gene.matrix, min.cells = 3, min.features = 200)
+```
+
+# **4. QUALITY CONTROL**
+
+```{r}
+data[["percent.mt"]] <- PercentageFeatureSet(data, pattern = "^MT-")
+data <- subset(data, subset = nFeature_RNA > 200 & nFeature_RNA < 2500 & percent.mt < 10)
+```
+
+# **5. NORMALIZE DATA**
+
+```{r}
+data <- NormalizeData(data)
+data <- FindVariableFeatures(data, selection.method = "vst", nfeatures = 2000)
+data <- ScaleData(data, features = rownames(data))
+```
+
+# **6. DEMULTIPLEXING CELLS**
+
+Adding ab.capture data as an independent assay:
+```{r}
+# Remove cells found in ab.capture but not in data because of QC. 
+remove.cells <- setdiff(colnames(ab.capture), colnames(data))
+`%notin%` <- Negate(`%in%`)
+ab.capture <- ab.capture[,colnames(ab.capture) %notin% remove.cells]
+# Add ab.capture data as a new assay independent from RNA.
+data[["ab.capture"]] <- CreateAssayObject(counts = ab.capture)
+# Normalize HTO data, here we use centered log-ratio (CLR) transformation.
+data <- NormalizeData(data, assay = "ab.capture", normalization.method = "CLR")
+# Demultiplex cells.
+data <- HTODemux(data, assay = "ab.capture", positive.quantile = 0.99)
+```
+
+Visualize demultiplexing results:
+```{r}
+# Global classification results.
+table(data$ab.capture_classification.global)
+# Ridge plot for each time-points. 
+Idents(data) <- "ab.capture_maxID"
+RidgePlot(data, assay = "ab.capture", features = rownames(data[["ab.capture"]])[1:6], ncol = 3) &
+  theme(axis.title.y = element_blank())
+# FeatureScatter plot bewteen chosen time-points. 
+FeatureScatter(data, feature1 = "abcapture_TP1", feature2 = "abcapture_TP4")
+FeatureScatter(data, feature1 = "abcapture_TP1", feature2 = "abcapture_TP6")
+```
+
+Keep Singlet and add time-points to the metadata:
+```{r}
+data.filt <- subset(data, subset = ab.capture_classification.global == "Singlet")
+data.filt$TP <- data.filt$ab.capture_classification %>% factor(levels = c("TP1", "TP2", "TP3", "TP4", "TP5", "TP6"))
+```
+
+# **7. DIMENSIONALITY REDUCTION**
+
+```{r}
+# Run PCA.
+data.filt <- RunPCA(data.filt, features = VariableFeatures(object = data.filt))
+# Find the elbow point.
+ElbowPlot(data.filt)
+# Cluster the cells.
+data.filt <- FindNeighbors(data.filt, dims = 1:10)
+data.filt <- FindClusters(data.filt, resolution = 0.5)
+# Run non-linear dimensional reduction.
+data.filt <- RunUMAP(data.filt, dims = 1:10)
+# Plot UMAP.
+DimPlot(data.filt)
+```
+
+# **8. ADD CLONOTYPE TO THE METADATA**
+
+```{r}
+# Import & format clonotype data for all cells (regardless of cells discarded by QC). 
+  clones <- read.csv(file = "../data/processed/filtered_contig_annotations.csv")
+# Keep only columns of interest. 
+col.to.keep <- c("barcode", "chain", "cdr3", "v_gene", "j_gene", "raw_clonotype_id")
+clones <- clones[,names(clones) %in% col.to.keep]
+# Create a function to concatenate values.
+concat_values <- function(x) {
+  paste(unique(x), collapse = ";")
+}
+# Group by barcode and chain, then summarize by concatenating the relevant columns.
+df.clones <- clones %>%
+  group_by(barcode, chain) %>%
+  summarize(
+    CDR3aa = concat_values(cdr3),
+    vgene = concat_values(v_gene),
+    jgene = concat_values(j_gene),
+    .groups = 'drop'
+  ) %>%
+  pivot_wider(
+    names_from = chain,
+    values_from = c(CDR3aa, vgene, jgene),
+    names_glue = "{chain}_{.value}"
+  ) %>%
+  rename(
+    TRB_CDR3aa = TRB_CDR3aa,
+    TRB_vgene = TRB_vgene,
+    TRB_jgene = TRB_jgene,
+    TRA_CDR3aa = TRA_CDR3aa,
+    TRA_vgene = TRA_vgene,
+    TRA_jgene = TRA_jgene
+  ) %>%
+  replace(is.na(.), "")
+# Reorder columns.
+df.clones <- df.clones[,c("barcode", "TRB_CDR3aa", "TRB_vgene", "TRB_jgene", "TRA_CDR3aa", "TRA_vgene", "TRA_jgene")] %>% as.data.frame()
+# Unite TRB_CDR3aa and TRA_CDR3aa into a single column "MergeCDR3".
+df.clones <- df.clones %>%
+  unite(col = "MergeCDR3", c("TRB_CDR3aa", "TRA_CDR3aa"), remove = FALSE, sep = "__")
+# Create a table of MergeCDR3 and order by frequency.
+clone.order <- names(sort(table(df.clones$MergeCDR3), decreasing = TRUE))
+# Create a named vector to map MergeCDR3 to CloneID.
+clone.id.map <- setNames(paste0("Clonotype", seq_along(clone.order)), clone.order)
+# Assign CloneID based on the mapping.
+df.clones$CloneID <- clone.id.map[df.clones$MergeCDR3]
+# Manually reordered the IDs of the three most frequent clones to reflect their correct ranking at TP6 .
+df.clones <- df.clones %>%
+  mutate(CloneID = case_when(
+    CloneID == "Clonotype2" ~ "Clonotype1",
+    CloneID == "Clonotype3" ~ "Clonotype2",
+    CloneID == "Clonotype1" ~ "Clonotype3",
+    TRUE ~ CloneID # in case there are other values
+  ))
+# Create dummy data frame with Barcode and Clonotype_ID columns.
+dummy <- data.frame(
+  Barcode = colnames(data.filt),
+  Clonotype_ID = NA_character_
+)
+# Join dummy with df.clones to get the CloneID for each Barcode.
+dummy <- dummy %>%
+  left_join(df.clones %>% select(barcode, CloneID), by = c("Barcode" = "barcode")) %>%
+  mutate(Clonotype_ID = ifelse(is.na(CloneID), "Undetected", str_to_title(CloneID))) %>%
+  select(Barcode, Clonotype_ID)
+# Add CloneID & CloneTP to the seurat object metadata.
+data.filt$Clone.ID <- dummy$Clonotype_ID
+data.filt$CloneTP <- paste(data.filt$TP, data.filt$Clone.ID, sep = "_")
+```
+
+# **9. SAVE PROCESSED DATA FOR LATER USE**
+
+```{r}
+# saveRDS(data.filt, file = "RDSfile/NewscRNAseq_Processed.RDS")
+# data.filt <- readRDS("RDSfile/NewscRNAseq_Processed.RDS")
+```
+
+# **10. PLOT TCR USAGE USING IMMUNARCH**
+
+This function tracks clonotypes across the various time points using the immunarch package (similar to Fig. 5a, 5b, and 5c). Cells without detected TCR were excluded. *Note that the color coding for each clone does not match the one used in Figure S7F*:
+```{r}
+# Create a dataframe with barcode and TP for each cell in the Seurat object (before QC)
+tmp <- data.frame(
+  barcode = colnames(data.filt),
+  TP = data.filt$TP
+)
+# Merge with the df.clones dataframe containing clonotype data for TRB chain
+final.clone <- tmp %>%
+  left_join(df.clones %>% select(barcode, CloneID), by = "barcode") %>%
+  mutate(
+    CloneID = ifelse(is.na(CloneID), "Undetected", CloneID),
+    TP = factor(TP, levels = c("TP1", "TP2", "TP3", "TP4", "TP5", "TP6")),
+    Clones = 1
+  ) %>%
+  rename(CDR3.aa = CloneID) %>%
+  select(Clones, barcode, TP, CDR3.aa)
+# Remove cells with undetected TCR
+final.clone <- final.clone %>%
+  filter(CDR3.aa != "Undetected")
+# Split final.clone into a list of tibbles based on TP
+list.beta <- split(final.clone, final.clone$TP)
+# Convert each dataframe in the list to a tibble
+list.beta <- lapply(list.beta, as_tibble)
+# Using trackClonotypes function from immunarch.
+tc <- trackClonotypes(list.beta, .which = unique(df.clones$CloneID), .col = "aa")
+vis(tc)  + theme(legend.position = "none")
+```
+
+# **11. DEG BETWEEN EARLY & LATE**
+
+Find DEG between Early (TP1) and Late (TP6) and plot them as a volcano plot (*S7C*):
+```{r}
+# Find DEG between TP1 and TP6.
+seurat.tp  <- subset(data.filt, subset = TP %in% c("TP1", "TP6"))
+Idents(seurat.tp) <- "TP"
+deg.tp <- FindMarkers(seurat.tp, ident.1 = "TP6", ident.2 = "TP1")
+deg.tp <- deg.tp[deg.tp$p_val_adj < 0.05,]
+deg.tp$gene <- rownames(deg.tp)
+
+# Chose genes to highlight.
+gene.highlight <- c("TCF7", "IL7R", "CCR7", "GZMK", "CD28", "CTLA4", "PRDM1", "PDCD1", "ADGRG1", "CEMIP2", "ISG20", "IFNG", "GZMB", "PRF1", "FGFBP2")
+# Plot volcano. 
+# pdf("../results/FigureS8C_TP1vsTP6_VolcanoPlot.pdf")
+plot.volcano(df.stat = deg.tp, 
+             pval.col = "p_val_adj", 
+             lfc.col = "avg_log2FC", 
+             gene.col = "gene", 
+             show.gene.nbr = F, 
+             lfc.colors = c("red", "grey", "blue"), 
+             label.genes = gene.highlight, 
+             label.size = 3, 
+             lfc.thresh = c(-0.5, 0.5)) + 
+  xlab("Log2 Fold Change") + 
+  ylab("-Log10 adjusted P value") +
+  theme(axis.title = element_text(size = 15))
+# dev.off()
+```
+
+Plotting violin plot of relevant genes shown in (*S7D*):
+```{r}
+# Plot genes associated with exhaustion/inhibition.
+VlnPlot(seurat.tp, features = c("TOX", "CD160", "PDCD1", "PRDM1", "ADGRG1"), group.by = "TP", ncol = 5, cols = c("red", "blue")) & theme(axis.title = element_blank())
+# Plot genes associated with stemness.
+VlnPlot(seurat.tp, features = c("IL7R", "GZMK", "CCR7", "CD28", "TCF7"), group.by = "TP", ncol = 5, cols = c("red", "blue")) & theme(axis.title = element_blank())
+```
+
+Export figure *S7D*:
+```{r}
+# Prepare the tp and df objects with customized identifiers.
+tp <- subset(data.filt, subset = TP %in% c("TP1", "TP6"))
+Idents(tp) <- "TP"
+df <- prepare_data(tp, ident1 = "TP6", ident2 = "TP1")
+
+# Plotting stemness genes and saving directly using ggsave.
+stemness_genes <- c("IL7R", "GZMK", "CCR7", "CD28", "TCF7")
+plot_gene_set(stemness_genes, "FigureS8D_TP1vsTP6_Stemness.pdf", df = df, tp = tp, group.by = "TP", cols = c("red", "blue"))
+
+# Plotting exhaustion genes and saving directly using ggsave.
+exhaustion_genes <- c("TOX", "CD160", "PDCD1", "PRDM1", "ADGRG1")
+plot_gene_set(exhaustion_genes, "FigureS8D_TP1vsTP6_Exhaustion.pdf", df = df, tp = tp, group.by = "TP", cols = c("red", "blue"))
+```
+
+# **12. DEG BETWEEN CLONOTYPE 1  & 2**
+
+Find DEG between Clonotype1 and Clonotype2:
+```{r}
+# subset seurat object to retain the clonotypes of interest at TP6.
+clonotypes <- subset(data.filt, subset = TP == "TP6")
+clonotypes <- subset(clonotypes, subset = Clone.ID %in% c("Clonotype1", "Clonotype2"))
+# Find DEG between TP1 and TP6.
+Idents(clonotypes) <- "Clone.ID"
+deg.clones <- FindMarkers(clonotypes, ident.1 = "Clonotype1", ident.2 = "Clonotype2")
+deg.clones$gene <- rownames(deg.clones)
+```
+
+Plot volcano plot:
+```{r}
+# Chose genes to highlight.
+gene.highlight <- c("TCF7", "IL7R", "GZMK", "CD27","PRF1", "CD160", "NKG7")
+# Plot volcano. 
+plot.volcano(df.stat = deg.clones, 
+             pval.col = "p_val_adj", 
+             lfc.col = "avg_log2FC", 
+             gene.col = "gene", 
+             show.gene.nbr = F, 
+             lfc.colors = c("#CC9900", "grey", "#339900"), 
+             label.genes = gene.highlight, 
+             label.size = 3, 
+             lfc.thresh = c(-0.5, 0.5)) + 
+  xlab("Log2 Fold Change") + 
+  ylab("-Log10 adjusted P value") +
+  theme(axis.title = element_text(size = 15))
+```
+
+Plotting violin plot of relevant genes shown in *S7F*:
+```{r}
+# Plot genes associated with exhaustion/inhibition.
+VlnPlot(clonotypes, features = c("TOX", "CD160", "PDCD1", "PRDM1", "ADGRG1"), group.by = "Clone.ID", ncol = 5, cols = c("#339900", "#CC9900")) & theme(axis.title = element_blank())
+# Plot genes associated with stemness.
+VlnPlot(clonotypes, features = c("IL7R", "GZMK", "CCR7", "CD28", "TCF7"), group.by = "Clone.ID", ncol = 5, cols = c("#339900", "#CC9900")) & theme(axis.title = element_blank())
+```
+
+Export figure *S7F*:
+```{r}
+# Prepare the tp and df objects with customized identifiers.
+tp <- subset(data.filt, subset = TP == "TP6")
+tp <- subset(tp, subset = Clone.ID %in% c("Clonotype1", "Clonotype2"))
+Idents(tp) <- "Clone.ID"
+df <- prepare_data(tp, ident1 = "Clonotype1", ident2 = "Clonotype2")
+
+# Plotting stemness genes and saving directly using ggsave.
+stemness_genes <- c("IL7R", "GZMK", "CCR7", "CD28", "TCF7")
+plot_gene_set(stemness_genes, "FigureS8F_Clonotype1vs2_Stemness.pdf", df = df, tp = tp, group.by = "Clone.ID", cols = c("#339900", "#CC9900"))
+
+# Plotting exhaustion genes and saving directly using ggsave.
+exhaustion_genes <- c("TOX", "CD160", "PDCD1", "PRDM1", "ADGRG1")
+plot_gene_set(exhaustion_genes, "FigureS8F_Clonotype1vs2_Exhaustion.pdf", df = df, tp = tp, group.by = "Clone.ID", cols = c("#339900", "#CC9900"))
+```
+

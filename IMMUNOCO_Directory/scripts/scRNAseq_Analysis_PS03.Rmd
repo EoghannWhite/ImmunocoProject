@@ -1,0 +1,365 @@
+---
+title: "Analysis"
+author: "Eoghann White"
+date: "2023-06-19"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# **AIM OF THE SCRIPT**
+The aim of this script is to analyze the gene expression of HIV-1 specific CD8 T cells from donor PS03 of the IMMUNOCO cohort.
+
+# **1. LOAD LIBRARIES**
+```{r}
+# Handling and analysis of scRNAseq datasets.
+library(SingleCellExperiment)
+library(Seurat)
+library(scran)
+library(scater)
+# Data manipulation/visualization.
+library(tidyverse)
+library(ggrepel)
+library(gridExtra)
+# Violin Plot.
+# devtools::install_github("psyteachr/introdataviz")
+library(introdataviz)
+# GSEA.
+library(fgsea)
+library(qusage)
+```
+
+# **2. LOAD USEFUL FUNCTIONS**
+
+```{r}
+source("MyFunctions.R")
+```
+
+# **3. IMPORT DATA**
+
+Importing normalized data and remove genes expressed in less than 10 cells in order to minimize computation time:
+
+```{r}
+# Import normalized data.
+sce <- readRDS("../data/GeneExpression/processed/SingleCellExperimentObject_HGNC.RDS")
+sce <- sce[,sce$Patient.TP %in% c("PS03EARLY", "PS03LATE")]
+# Keep genes express in at least 10 cells.
+num.cells <- nexprs(sce, byrow=TRUE)
+sce <- sce[num.cells > 10,]
+```
+
+# **4. DIMENSIONALITY REDUCTION AND DATA VISUALIZATION**
+
+## Principal componant analysis
+
+Run PCA:
+
+```{r}
+set.seed(100)
+sce <- runPCA(sce)
+```
+
+Plotting PCA:
+
+```{r}
+# Chose componant to plot.
+compx <- 1
+compy <- 2
+
+#plot PCA
+plotReducedDim(sce, dimred= "PCA", colour_by = "TP", ncomponents = c(compx, compy), point_size = 2) + 
+  scale_color_manual(name = "", values = c("red", "blue"), labels = c("Early", "Late"))
+```
+
+In order to focus on the biological signal, minimize computational effort, and eliminate noise, only the principal components (PCs) with the highest variance explained are retained for subsequent analysis. PCs are selected based on the elbow point in the screeplot. Here, we select the first 8 PCs:
+
+```{r}
+percent.var <- attr(reducedDim(sce), "percentVar")
+plot(percent.var, xlab="PC", ylab="Variance explained (%)")
+abline(v = 8, col = "red", lwd = 3, lty = 3)
+reducedDim(sce, "PCA_filt") <- reducedDim(sce)[,1:8]
+```
+
+## Visualization
+
+Running UMAP algorithm:
+
+```{r}
+set.seed(00101001101)
+sce <- runUMAP(sce, dimred="PCA", name = "UMAP", n_neighbors = 50)
+set.seed(00101001101)
+sce <- runUMAP(sce, dimred="PCA_filt", name = "UMAP_filt", n_neighbors = 50)
+```
+
+When keeping only the first 8 PCs, Uniform Manifold Approximation and Projection (UMAP) partionned the cells in two groups corresponding to EARLY and LATE cells (*Fig S3B*):
+
+```{r}
+plotReducedDim(sce, dimred="UMAP_filt", colour_by="TP", point_size = 3) + 
+  scale_color_manual(name = "", values = c("red", "blue"), labels = c("Early", "Late")) +
+  ggtitle("UMAP after PCs selection") +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 12))
+```
+
+# **5. MARKER GENE DETECTION**
+
+We use a Wilcoxon rank sum tests to identify differentially expressed genes between EARLY and LATE. The `wilcoxon.sce` function is a wrapper around the `findMarkers` function from the `scran` package (https://rdrr.io/bioc/scran/man/findMarkers.html). p-values are adjusted for multiple comparisons using the False Discovery Rate (FDR). The output is a dataframe containing 5 columns (Genes, uncorrected p-values, FDR adjusted p-values, log2 fold change and the symbol associated with the significativity):
+
+```{r}
+df <- wilcoxon.sce(sce.object = sce, group.by = "TP", compareTo = 2)
+```
+
+## Volcano plot of Differentially Expressed Genes (DEG)
+
+To highlight statistically significant genes with large fold change (potentially the most biologically meaningful genes), a volcano plot was generated using the `plot.volcano` function (homemade). The code below generates :
+  - Simple volcano plot (*Fig S3C*)
+  - Volcano highlighting key genes associated with Exhaustion and inhibition of CD8 T cells
+  - Volcano highlighting key genes associated with IFN signaling
+  - Volcano highlighting key genes associated with Stemness of CD8 T cells
+
+```{r}
+# Simple volcano plot
+plot.volcano(df.stat = df, pval.col = "FDR", lfc.col = "logFC.EARLY", lfc.colors = c("red", "grey", "blue"), 
+             show.vlines = T, show.hline = T,  show.gene.nbr = T) +
+  xlab(bquote('log'^2~fold~change)) +
+  ylab(bquote('-log'^10~ adjusted~p~values))
+  
+# Highlighting genes associated with Exhaustion/inhibition
+gene.labels <- c("HAVCR2", "SLA2", "PRDM1", "SLA", "SLA2")
+plot.volcano(df.stat = df, pval.col = "FDR", lfc.col = "logFC.EARLY", gene.col = "Genes", lfc.colors = c("red", "grey", "blue"), 
+             show.vlines = T, show.hline = T,  show.gene.nbr = T, label.genes = gene.labels, label.size = 5) +
+  xlab(bquote('log'^2~fold~change)) +
+  ylab(bquote('-log'^10~ adjusted~p~values))
+
+# Highlighting genes associated with IFN signaling
+gene.labels <- c("IFI27", "IFI44L", "IFI6", "ISG15", "IFITM1")
+plot.volcano(df.stat = df, pval.col = "FDR", lfc.col = "logFC.EARLY", gene.col = "Genes", lfc.colors = c("red", "grey", "blue"), 
+             show.vlines = T, show.hline = T,  show.gene.nbr = T, label.genes = gene.labels, label.size = 5) +
+  xlab(bquote('log'^2~fold~change)) +
+  ylab(bquote('-log'^10~ adjusted~p~values))
+
+# Highlighting genes associated with stemness 
+gene.labels <- c("GZMK", "IL7R", "TCF7", "NELL2")
+plot.volcano(df.stat = df, pval.col = "FDR", lfc.col = "logFC.EARLY", gene.col = "Genes", lfc.colors = c("red", "grey", "blue"), 
+             show.vlines = T, show.hline = T,  show.gene.nbr = T, label.genes = gene.labels, label.size = 5) +
+  xlab(bquote('log'^2~fold~change)) +
+  ylab(bquote('-log'^10~ adjusted~p~values))
+
+# Highlighting all 3 groups
+gene.labels <- c("HAVCR2", "SLA2", "PRDM1", "SLA", "SLA2",
+                 "IFI27", "IFI44L", "IFI6", "ISG15", "IFITM1",
+                 "GZMK", "IL7R", "TCF7", "NELL2")
+plot.volcano(df.stat = df, pval.col = "FDR", lfc.col = "logFC.EARLY", gene.col = "Genes", lfc.colors = c("red", "grey", "blue"), 
+             show.vlines = T, show.hline = T,  show.gene.nbr = T, label.genes = gene.labels, label.size = 4) +
+  xlab(bquote('log'^2~fold~change)) +
+  ylab(bquote('-log'^10~ adjusted~p~values))
+```
+
+## Heatmap of DEG
+
+By generating a volcano plot, it was observed that 142 genes were enriched at the EARLY stage and 87 genes were enriched at the LATE stage (considering a moderately stringent threshold of 1 for the log2 fold-change). These genes are shown in the following heatmap (*Fig S3D*):
+
+```{r}
+# Chose thresholds for gene selection.
+lfc.thresh <- 1
+FDR.thresh <- 0.05
+
+# Select genes based on thresholds and create a new sce object with these genes. 
+heatmap.genes <- df[df$FDR < FDR.thresh & abs(df$logFC.EARLY) > lfc.thresh, "Genes"]
+heatmap.sce <- sce[heatmap.genes]
+
+# Set colors for the heatmap. 
+colors <- list(TP = c("EARLY" = "red", "LATE" = "blue"))
+
+# Plot.
+plotHeatmap(
+  heatmap.sce,
+  rownames(heatmap.sce),
+  exprs_values = "logcounts",
+  center = T,
+  colour_columns_by = "TP",
+  column_annotation_colors = colors[1],
+  order_columns_by = "TP",
+  show_colnames = F, 
+  show_rownames = F,
+  treeheight_row = 0, 
+  treeheight_col = 0,
+  annotation_legend = F
+)
+```
+
+## Violin plot of key DEG
+
+The set of highly enriched genes at the EARLY time point included genes commonly linked to exhaustion and inhibition of CD8 T cells, along with an IFN signaling signature. On the other hand, cells at LATE showed increased expression of genes associated with stemness of CD8 T cells. The corresponding genes are plotted as violin plot with the `plot.violin` function (homemade around ggplot2): 
+
+```{r}
+# Genes asscoiated with Exhaustion/inhibition of CD8 T cells.
+gene.vector <- c("HAVCR2", "PRDM1", "SLA", "SLA2")
+plot.violin(sce.object = sce, gene.vector = gene.vector, df.wilcox = df, group.by = "TP", colors = c("red", "blue"))
+
+# Genes asscoiated with IFN signaling.
+gene.vector <- c("IFI27", "IFI44L", "IFI6", "ISG15", "IFITM1")
+plot.violin(sce.object = sce, gene.vector = gene.vector, df.wilcox = df, group.by = "TP", colors = c("red", "blue"))
+
+# Genes asscoiated with Stemness of CD8 T cells.
+gene.vector <- c("GZMK", "IL7R", "TCF7", "NELL2")
+plot.violin(sce.object = sce, gene.vector = gene.vector, df.wilcox = df, group.by = "TP", colors = c("red", "blue"))
+```
+
+Alternatively, violin plot can be plotted with the `VlnPlot` function from `Seurat` (Violin plots in *Fig S3E*):
+
+```{r, Directory, Selected genes and Seurat object}
+# Create seurat object.
+data_seurat <- as.Seurat(sce, counts = "counts", data = "logcounts")
+
+# Plot and export Exhaustion/inhibition associated genes.
+gene.vector <- c("HAVCR2", "PRDM1", "SLA", "SLA2")
+myplots <- lapply(gene.vector, plot_seq_data)
+pdf(file ="../results/figures/Figure3E_ViolinPlotExhaustion_PS03.pdf", height = 2, width = 2*length(myplots))
+grid.arrange(grobs = myplots, ncol = length(myplots))
+dev.off()
+# Plot and export IFN signaling associated genes.
+gene.vector <- c("IFI27", "IFI44L", "IFI6", "ISG15", "IFITM1")
+myplots <- lapply(gene.vector, plot_seq_data)
+pdf(file ="../results/figures/Figure3E_ViolinPlotIFN_PS03.pdf", height = 2, width = 2*length(myplots))
+grid.arrange(grobs = myplots, ncol = length(myplots))
+dev.off()
+# Plot and export stemness associated genes.
+gene.vector <- c("GZMK", "IL7R", "TCF7", "NELL2")
+myplots <- lapply(gene.vector, plot_seq_data)
+pdf(file ="../results/figures/Figure3E_ViolinPlotStemness_PS03.pdf", height = 2, width = 2*length(myplots))
+grid.arrange(grobs = myplots, ncol = length(myplots))
+dev.off()
+```
+
+# **6. GENE SET ENRICHEMENT ANALYSIS**
+
+GSEA was performed using the software from the Broad Institute (https://www.gsea-msigdb.org/gsea/index.jsp) with the *Reactome* database. Statistically significant and interesting pathways related to CD8 T cell biology were imported into R and re-plotted using the `fgsea` package for better visualization. These pathways can be found in the `My_SelectedReactomePathways_GSEA.gmt` object. Moreover, additional pathways from the literature that are relevant in the context of HIV-1 infection were manually curated and can be found in the `Manuallycurated_GSEA.gmt` object (*Fig 3 F&G*). 
+
+Running GSEA with the `fgsea` package :
+```{r}
+# Re-run wilcoxon function with `compareTo` set at 1. logFC values for LATE will then be negative and on the right part of the gsea plot.
+dfgsea <- wilcoxon.sce(sce.object = sce, group.by = "TP", compareTo = 1)
+
+# Extracting log fold change for the df object previously created. 
+dfgsea <- dfgsea[order(dfgsea$logFC.LATE, decreasing = T),]
+ranks <- dfgsea$logFC.LATE
+names(ranks) <- dfgsea$Genes
+
+# Running GSEA with the manually curated pathways.
+gmt.perso <- qusage::read.gmt("../data/AdditionnalFiles/Manuallycurated_GSEA.gmt")
+set.seed(100)
+perso.gsea <- fgsea(pathways = gmt.perso, 
+                  stats    = ranks,
+                  minSize  = 15,
+                  maxSize  = 500)
+
+# Running GSEA with selected reactome pathways. 
+gmt.reac <- qusage::read.gmt("../data/AdditionnalFiles/My_SelectedReactomePathways_GSEA.gmt")
+set.seed(100)
+reac.gsea <- fgsea(pathways = gmt.reac, 
+                  stats    = ranks,
+                  minSize  = 15,
+                  maxSize  = 500)
+```
+
+Plotting results from *Fig S3F*:
+
+```{r}
+# For Reactome pathways.
+  # Select one of the following pathways to plot.
+  pathreact <- c("IFN signaling", "Apoptosis", "Stabilization of p53")
+  path.to.plot <- pathreact[3]
+  # Plot gsea. 
+  plotEnrichment(gmt.reac[[path.to.plot]], ranks) + 
+  ggtitle(path.to.plot) +
+  xlab("Gene Ranking") +
+  ylab("Enrichment score") + 
+  annotate(geom = "text", 
+           x = ifelse(reac.gsea[reac.gsea$pathway == path.to.plot, "ES"] < 0, 0, 5500), 
+           y = as.numeric(reac.gsea[reac.gsea$pathway == path.to.plot, "ES"]*.85), 
+           label = paste0("NES: ", format(as.numeric(reac.gsea[reac.gsea$pathway == path.to.plot, "NES"]), digits = 3),
+                          "\nFDR: ", format(as.numeric(reac.gsea[reac.gsea$pathway == path.to.plot, "padj"]), digits = 3)), hjust = 0, size = 6) + 
+  theme(plot.title = element_text(hjust = 0.5, size = 14),
+        axis.line = element_blank(),
+        axis.text = element_text(size = 18, colour = "black"),
+        axis.title = element_text(size = 18),
+        axis.ticks.length = unit(.25, "cm"),
+        panel.border = element_rect(colour = "black", fill = NA, size = 0.75),
+        panel.background = element_blank(),
+        panel.grid = element_blank())
+        
+# For manually curated pathways.
+  # Select one of the following pathways to plot.
+  pathperso <- c("Central memory (from Pace et al. 2018)", "Co-inhibitory molecules (from Chihara et al. 2018)", "Terminal exhausted (from Miller et al. 2019)")
+  path.to.plot2 <- pathperso[3]
+  # Plot gsea. 
+  plotEnrichment(gmt.perso[[path.to.plot2]], ranks) + 
+  ggtitle(path.to.plot2) +
+  xlab("Gene Ranking") +
+  ylab("Enrichment score") + 
+  annotate(geom = "text", 
+           x = ifelse(perso.gsea[perso.gsea$pathway == path.to.plot2, "ES"] < 0, 0, 5500), 
+           y = as.numeric(perso.gsea[perso.gsea$pathway == path.to.plot2, "ES"]*.85), 
+           label = paste0("NES: ", format(as.numeric(perso.gsea[perso.gsea$pathway == path.to.plot2, "NES"]), digits = 3),
+                          "\nFDR: ", format(as.numeric(perso.gsea[perso.gsea$pathway == path.to.plot2, "padj"]), digits = 3)), hjust = 0, size = 6) + 
+  theme(plot.title = element_text(hjust = 0.5, size = 14),
+        axis.line = element_blank(),
+        axis.text = element_text(size = 18, colour = "black"),
+        axis.title = element_text(size = 18),
+        axis.ticks.length = unit(.25, "cm"),
+        panel.border = element_rect(colour = "black", fill = NA, size = 0.75),
+        panel.background = element_blank(),
+        panel.grid = element_blank())
+```
+
+Comparison with  Controller and Progressor signatures (*Fig 4A&B*):
+
+```{r}
+# Controller signature.
+  # Select pathway to plot.
+  path.to.plot2 <- "GSE24081_CONTROLLER_VS_PROGRESSOR_HIV_SPECIFIC_CD8_TCELL_UP"
+  # Plot gsea. 
+  plotEnrichment(gmt.perso[[path.to.plot2]], ranks) + 
+  ggtitle("Controller signature") +
+  xlab("Gene Ranking") +
+  ylab("Enrichment score") + 
+  annotate(geom = "text", 
+           x = ifelse(perso.gsea[perso.gsea$pathway == path.to.plot2, "ES"] < 0, 0, 7500), 
+           y = as.numeric(perso.gsea[perso.gsea$pathway == path.to.plot2, "ES"]*.85), 
+           label = paste0("NES: ", format(as.numeric(perso.gsea[perso.gsea$pathway == path.to.plot2, "NES"]), digits = 3),
+                          "\nFDR: ", format(as.numeric(perso.gsea[perso.gsea$pathway == path.to.plot2, "padj"]), digits = 3)), hjust = 0, size = 6) + 
+  theme(plot.title = element_text(hjust = 0.5, size = 14),
+        axis.line = element_blank(),
+        axis.text = element_text(size = 18, colour = "black"),
+        axis.title = element_text(size = 18),
+        axis.ticks.length = unit(.25, "cm"),
+        panel.border = element_rect(colour = "black", fill = NA, size = 0.75),
+        panel.background = element_blank(),
+        panel.grid = element_blank())
+  
+# Progressor signature.
+  # Select pathway to plot.
+  path.to.plot2 <- "GSE24081_CONTROLLER_VS_PROGRESSOR_HIV_SPECIFIC_CD8_TCELL_DN"
+  # Plot gsea. 
+  plotEnrichment(gmt.perso[[path.to.plot2]], ranks) + 
+  ggtitle("Progressor signature") +
+  xlab("Gene Ranking") +
+  ylab("Enrichment score") + 
+  annotate(geom = "text", 
+           x = ifelse(perso.gsea[perso.gsea$pathway == path.to.plot2, "ES"] < 0, 0, 7500), 
+           y = as.numeric(perso.gsea[perso.gsea$pathway == path.to.plot2, "ES"]*.85), 
+           label = paste0("NES: ", format(as.numeric(perso.gsea[perso.gsea$pathway == path.to.plot2, "NES"]), digits = 3),
+                          "\nFDR: ", format(as.numeric(perso.gsea[perso.gsea$pathway == path.to.plot2, "padj"]), digits = 3)), hjust = 0, size = 6) + 
+  theme(plot.title = element_text(hjust = 0.5, size = 14),
+        axis.line = element_blank(),
+        axis.text = element_text(size = 18, colour = "black"),
+        axis.title = element_text(size = 18),
+        axis.ticks.length = unit(.25, "cm"),
+        panel.border = element_rect(colour = "black", fill = NA, size = 0.75),
+        panel.background = element_blank(),
+        panel.grid = element_blank())
+```
