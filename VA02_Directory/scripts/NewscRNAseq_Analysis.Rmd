@@ -191,7 +191,7 @@ clone.order <- names(sort(table(df.clones$MergeCDR3), decreasing = TRUE))
 clone.id.map <- setNames(paste0("Clonotype", seq_along(clone.order)), clone.order)
 # Assign CloneID based on the mapping.
 df.clones$CloneID <- clone.id.map[df.clones$MergeCDR3]
-# Manually reordered the IDs of the three most frequent clones to reflect their correct ranking at TP6 .
+# Manually reordered the IDs of the three most frequent clones to reflect their correct ranking at TP6.
 df.clones <- df.clones %>%
   mutate(CloneID = case_when(
     CloneID == "Clonotype2" ~ "Clonotype1",

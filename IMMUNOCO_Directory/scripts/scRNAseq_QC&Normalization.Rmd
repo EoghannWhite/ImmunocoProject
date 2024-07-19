@@ -28,12 +28,12 @@ library(biomaRt)
 # **2. IMPORT RAW DATA & ADD METADATA**
 ```{r}
 # Load count matrix and remove genes with 0 counts in all cells. 
-raw_counts <- readRDS(file = "../1-RawData/Raw_counts.RDS")
+raw_counts <- readRDS(file = "../data/GeneExpression/raw/Raw_counts.RDS")
 always_zero <- which(rowSums(raw_counts)==0)
 raw_counts <- raw_counts[-always_zero,]
 # Create the SingleCellExperiment object (`sce`) and add the metadata.
 sce <- SingleCellExperiment(assay = list(counts = as.matrix(raw_counts)))
-metadata <- readRDS("../1-RawData/Metadata.RDS")
+metadata <- readRDS("../data/AdditionnalFiles/Metadata.RDS")
 colData(sce) <- DataFrame(metadata)
 ```
 
@@ -194,6 +194,5 @@ rownames(hgnc_sce@assays@data$logcounts) <- annot3$hgnc_symbol
 
 # **7. EXPORT FINAL OBJECT**
 ```{r}
-saveRDS(sce, "SingleCellExperimentObject.RDS")
-saveRDS(hgnc_sce, "SingleCellExperimentObject_HGNC.RDS")
+saveRDS(hgnc_sce, "../data/GeneExpression/processed/SingleCellExperimentObject_HGNC.RDS")
 ```
