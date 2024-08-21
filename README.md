@@ -54,7 +54,7 @@ The repository is organized into two main directories: one named ImmunocoDirecto
 
 - The working environment for each script corresponds to the directory in which the script is located.
 
-- The `clonotypicProcessing_MiXCR.Rmd` and `clonotypicProcessing_VDJTools.Rmd` are designed to operate within a bash environment , utilizing R Markdown to enhance clarity and ease of presentation.
+- The `clonotypicProcessing_MiXCR.Rmd` and `clonotypicProcessing_VDJTools.Rmd` are designed to operate within a bash environment, utilizing R Markdown to enhance clarity and ease of presentation.
 
 - Due to GitHub's restriction on file sizes exceeding 100 MB, the `matrix.mtx.gz` file for the raw data of the VA02 donor has been split into three separate files. The `NewscRNAseq_Analysis.Rmd` script includes code to merge these split files and reassemble the original `matrix.mtx.gz` file.
 
