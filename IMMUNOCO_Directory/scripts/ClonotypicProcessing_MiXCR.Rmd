@@ -64,7 +64,7 @@ Putting it all together: Below is a single command to execute the step-by-step a
 
 In this setup, each patient's FASTQ files are organized in a dedicated folder, with subfolders for each index or cell sequence. The command iterates through all patient folders, and within each patient's folder, it processes the paired-end FASTQ files found in the subfolders corresponding to each cell sequence. This structure ensures that the command can handle the data for each patient individually, navigating through the subfolders to access and process the paired-end FASTQ files for each cell sequence specific to that patient. 
 
-Each output is directed to another directory constructed in a similar way. For each patient, a corresponding output folder is created, containing subfolders for each index or cell sequence, mirroring the input directory structure. This organization facilitates easy tracking and management of the processed data.
+Each output is directed to another directory constructed in a similar way. For each patient, a corresponding output folder is created, containing subfolders for each index or cell sequence, mirroring the input directory structure.
 
 ```{bash}
 path=/Path/to/raw/fastq/root/directory

@@ -206,9 +206,9 @@ dummy <- data.frame(
 )
 # Join dummy with df.clones to get the CloneID for each Barcode.
 dummy <- dummy %>%
-  left_join(df.clones %>% select(barcode, CloneID), by = c("Barcode" = "barcode")) %>%
+  left_join(df.clones %>% dplyr::select(barcode, CloneID), by = c("Barcode" = "barcode")) %>%
   mutate(Clonotype_ID = ifelse(is.na(CloneID), "Undetected", str_to_title(CloneID))) %>%
-  select(Barcode, Clonotype_ID)
+  dplyr::select(Barcode, Clonotype_ID)
 # Add CloneID & CloneTP to the seurat object metadata.
 data.filt$Clone.ID <- dummy$Clonotype_ID
 data.filt$CloneTP <- paste(data.filt$TP, data.filt$Clone.ID, sep = "_")
@@ -232,14 +232,14 @@ tmp <- data.frame(
 )
 # Merge with the df.clones dataframe containing clonotype data for TRB chain
 final.clone <- tmp %>%
-  left_join(df.clones %>% select(barcode, CloneID), by = "barcode") %>%
+  left_join(df.clones %>% dplyr::select(barcode, CloneID), by = "barcode") %>%
   mutate(
     CloneID = ifelse(is.na(CloneID), "Undetected", CloneID),
     TP = factor(TP, levels = c("TP1", "TP2", "TP3", "TP4", "TP5", "TP6")),
     Clones = 1
   ) %>%
   rename(CDR3.aa = CloneID) %>%
-  select(Clones, barcode, TP, CDR3.aa)
+  dplyr::select(Clones, barcode, TP, CDR3.aa)
 # Remove cells with undetected TCR
 final.clone <- final.clone %>%
   filter(CDR3.aa != "Undetected")

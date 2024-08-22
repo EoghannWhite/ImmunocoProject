@@ -199,7 +199,7 @@ plotHeatmap(
   show_rownames = F,
   treeheight_row = 0, 
   treeheight_col = 0,
-  annotation_legend = F
+  annotation_legend = T
 )
 ```
 

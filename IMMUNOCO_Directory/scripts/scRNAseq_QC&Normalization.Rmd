@@ -15,7 +15,7 @@ knitr::opts_chunk$set(echo = TRUE)
 The aim of this script is to perform quality control (QC) and normalization of scRNAseq data from HIV-2 specific CD8 T cells and HIV-1 specific CD8 T cells from the IMMUNOCO cohort. 
 
 # **1. LOAD PACKAGES**
-```{r, Loading packages, message=F, warning=F, results=F}
+```{r, Loading packages}
 library(tidyverse)
 library(SingleCellExperiment)
 library(AnnotationHub)
